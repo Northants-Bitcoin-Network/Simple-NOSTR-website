@@ -21,7 +21,12 @@
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+/* Pages differ in length, so reserve the scrollbar's width always — otherwise
+   the whole layout shifts sideways each time you switch page. */
+html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
+@supports not (scrollbar-gutter: stable) {
+  html { overflow-y: scroll; }
+}
 body {
   margin: 0; font-family: var(--font); background: var(--bg); color: var(--text);
   line-height: 1.6; overflow-wrap: anywhere;
@@ -90,20 +95,20 @@ main.is-wide { max-width: var(--maxw-wide); }
 /* ---- feed grid ---- */
 .feed-grid {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;
-  grid-auto-rows: 1fr;   /* every card the same height, across every row */
+  grid-auto-rows: minmax(0, 500px);   /* every card the same height, and never taller than 500px */
 }
-.feed-grid .note { margin-bottom: 0; display: flex; flex-direction: column; }
-/* Long posts are clamped so no one card runs away with the page. The clamp only
-   ever sees text: inline media is hidden and shown as a thumbnail instead,
-   because -webkit-box mislays block children and rides them over the text.
-   max-height repeats the clamp in whole lines, so a part line never shows. */
+/* The card's height is set by its row, so it must clip: nothing crosses its border. */
+.feed-grid .note { margin-bottom: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* The body uses the whole card it is given — the cards are all the same height,
+   so there is no need to stop short at a line count. Inline media is hidden and
+   shown as a thumbnail instead, so nothing block-level rides over the text. */
 .feed-grid .note-body {
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8;
-  max-height: 12.8em;   /* 8 lines at the 1.6 body line-height */
-  overflow: hidden; overflow-wrap: anywhere;
-  flex: 0 1 auto; min-height: 0;   /* content keeps its own height; slack falls to the foot of the card */
+  flex: 1 1 auto; min-height: 0; overflow: hidden; overflow-wrap: anywhere;
 }
 .feed-grid .note-body img, .feed-grid .note-body video { display: none; }
+/* When there is a picture it takes the leftover room, so the text must not:
+   otherwise the body stretches and opens a gap above the picture. */
+.feed-grid .note:has(.note-thumb) .note-body { flex: 0 1 auto; }
 .note-thumb {
   width: 100%; height: 180px; object-fit: cover; display: block;
   border-radius: 10px; border: 1px solid var(--border); margin-top: .7rem;
@@ -111,15 +116,15 @@ main.is-wide { max-width: var(--maxw-wide); }
 /* Text is never cut mid-line, so the picture takes up the slack instead:
    it grows to fill the card and is cropped at the bottom. */
 .feed-grid .note-thumb { flex: 1 1 180px; height: auto; min-height: 180px; }
-.feed-grid .note-foot { padding-top: .8rem; }
+.feed-grid .note-foot { flex: none; padding-top: .8rem; }
 .note[data-note] { cursor: pointer; }
 .note[data-note]:hover { border-color: var(--brand); }
 .note[data-note]:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 @media (max-width: 900px) { .feed-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px)  {
-  .feed-grid { grid-template-columns: minmax(0, 1fr); }
-  .feed-grid .note-body { -webkit-line-clamp: none; display: block; max-height: none; }
+  .feed-grid { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; }
+  .feed-grid .note-body { overflow: visible; }
 }
 
 /* ---- gallery ---- */
@@ -329,3 +334,74 @@ body.is-locked { overflow: hidden; }
 }
 .footer p { margin: .3rem 0; }
 .relaystat { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }
+
+/* ---- long-form articles ---- */
+.article-list { display: grid; gap: 14px; }
+.article {
+  display: flex; gap: 14px; align-items: flex-start; text-decoration: none; color: inherit;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px;
+}
+.article:hover { border-color: var(--brand); }
+.article-img {
+  flex: none; width: 120px; height: 90px; object-fit: cover;
+  border-radius: 10px; border: 1px solid var(--border);
+}
+.article-text { min-width: 0; }
+.article-date { display: block; font-size: .78rem; color: var(--muted); }
+.article-title { margin: .15rem 0 .3rem; font-size: 1.1rem; }
+.article-summary {
+  margin: 0; color: var(--muted); font-size: .9rem;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+}
+@media (max-width: 560px) {
+  .article { flex-direction: column; }
+  .article-img { width: 100%; height: 160px; }
+}
+
+.longform {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 26px 28px;
+}
+.longform-title { margin: 0 0 .3rem; font-size: 1.7rem; line-height: 1.25; }
+.longform-date { margin: 0; color: var(--muted); font-size: .85rem; }
+.longform-summary { margin: .9rem 0 0; color: var(--muted); font-style: italic; }
+.longform-img { width: 100%; height: auto; border-radius: 10px; margin-top: 1.2rem; }
+.longform-body { margin-top: 1.2rem; }
+.longform-body h2 { font-size: 1.3rem; margin: 1.8rem 0 .5rem; }
+.longform-body h3 { font-size: 1.1rem; margin: 1.5rem 0 .4rem; }
+.longform-body h4, .longform-body h5, .longform-body h6 { font-size: 1rem; margin: 1.3rem 0 .4rem; }
+.longform-body p { margin: 0 0 1rem; }
+.longform-body img, .longform-body video { display: block; max-width: 100%; border-radius: 10px; margin: 1rem 0; }
+.longform-body ul, .longform-body ol { margin: 0 0 1rem; padding-left: 1.3rem; }
+.longform-body li { margin-bottom: .3rem; }
+.longform-body blockquote {
+  margin: 0 0 1rem; padding: .2rem 0 .2rem 1rem;
+  border-left: 3px solid var(--border); color: var(--muted);
+}
+.longform-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.8rem 0; }
+.longform-body pre {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: .9rem 1rem; overflow-x: auto;
+}
+.longform-body pre code { background: none; border: 0; padding: 0; font-size: .85rem; }
+.longform-body code {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+  padding: .05rem .3rem; font-size: .88em;
+}
+
+/* ---- mentions ---- */
+.note-author { font-weight: 700; font-size: .85rem; text-decoration: none; }
+.note-author:hover { text-decoration: underline; }
+
+/* ---- quoted notes ---- */
+.quote {
+  display: block; margin: .7rem 0; padding: .7rem .9rem;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  font-size: .92em;
+}
+.quote-head { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .35rem; flex-wrap: wrap; }
+.quote-date { color: var(--muted); font-size: .78rem; }
+.quote-body { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quote-body img, .quote-body video { display: block; max-width: 100%; border-radius: 8px; margin: .5rem 0; }
+/* A quote fills whatever room the card has; the card does the trimming. */
+.feed-grid .quote-body img, .feed-grid .quote-body video { display: none; }

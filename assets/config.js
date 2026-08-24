@@ -10,17 +10,21 @@ var SITE_CONFIG = {
   favicon: "https://cdn.nostr.build/i/95ddaad6c4b9c39f65af30c407eda40abaa10de13ed6c998583e56423dbe97eb.jpg",
 
   /* How many posts appear on each page of the feed. */
-  perPage: 20,
+  perPage: 21,
 
   /* Which pages appear in the navigation. Set one to false to hide both its
      tab and its page; links to a hidden page fall back to the feed.
        topics   - hashtags found in the posts, and the posts under each
        gallery  - every image from the posts, as a grid
-       calendar - calendar events published by this account (NIP-52) */
+       calendar - calendar events published by this account (NIP-52)
+       articles - long-form articles published by this account (NIP-23)
+       mentions - posts by other people that tag this account */
   pages: {
     topics: true,
     gallery: true,
     calendar: true,
+    articles: true,
+    mentions: true,
     about: true
   },
 

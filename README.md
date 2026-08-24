@@ -23,7 +23,8 @@ file — nothing else needs touching.
 var SITE_CONFIG = {
   npub: "npub1…",     // whose posts the site shows
   perPage: 20,        // posts per page
-  pages: { topics: true, gallery: true, calendar: true, about: true },
+  pages: { topics: true, gallery: true, calendar: true, articles: true,
+           mentions: true, about: true },
   relays: [ "wss://nos.lol", … ]
 };
 ```
@@ -50,14 +51,19 @@ to the feed.
 | `topics` | Every hashtag found in the posts, and the posts filed under each one. |
 | `gallery` | Every image from the posts as a grid, each linking back to its post. |
 | `calendar` | Calendar events published by the account ([NIP-52](https://github.com/nostr-protocol/nips/blob/master/52.md)), upcoming first, past ones dimmed. |
+| `articles` | Long-form articles published by the account ([NIP-23](https://github.com/nostr-protocol/nips/blob/master/23.md)), rendered from Markdown. |
+| `mentions` | Posts by other people that tag this account, newest first. |
 | `about` | Profile details, Nostr address, Lightning address and public key. |
 
-Turning `calendar` off also stops the site asking relays for event data at all.
+Turning `calendar`, `articles` or `mentions` off also stops the site asking relays
+for that data at all.
 
 Every listing is paginated — the feed, the posts under a topic, the gallery and the
 events — and page numbers live in the address (`#/page/2`, `#/tag/bitcoin/2`,
-`#/gallery/3`, `#/calendar/2`), so any page can be linked or bookmarked. Individual
-posts get permalinks too (`#/note/note1…`).
+`#/gallery/3`, `#/calendar/2`, `#/articles/2`, `#/mentions/2`), so any page can be
+linked or
+bookmarked. Individual posts and articles have their own addresses too
+(`#/note/note1…`, `#/article/<id>`).
 
 ## Files
 
