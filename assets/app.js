@@ -981,7 +981,6 @@
                 '" target="_blank" rel="noopener noreferrer">' + esc(l.url) + '</a></dd>';
       });
 
-      html += '<dt>Posts loaded</dt><dd>' + list.length + '</dd>';
       html += '</dl></div>';
     } else {
       var roots = list.filter(function (e) { return !isReply(e); });
