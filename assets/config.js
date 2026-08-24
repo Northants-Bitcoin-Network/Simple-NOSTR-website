@@ -27,8 +27,8 @@ var SITE_CONFIG = {
   /* Contact details shown on the About page. Leave a value empty ("") to hide
      that row. `links` is your own list — add as many as you like. */
   contact: {
-    email: "",
-    telegram: "",
+    email: "northantsxbt@proton.me",
+    telegram: "https://t.me/nshirebitcoin",
     links: [
       // { label: "Website",  url: "https://example.com" },
       // { label: "Meetup",   url: "https://meetup.com/..." }
