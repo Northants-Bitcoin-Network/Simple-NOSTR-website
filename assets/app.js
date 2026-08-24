@@ -3,24 +3,16 @@
 (function () {
   "use strict";
 
-  /* The account this site publishes. Paste an npub1… key here — a bare
-     64-character hex pubkey is accepted too. */
-  var ACCOUNT = "npub1d6cnmzg9m4kpfxxnzvcgljg4jwk09tu2xet3e72yx6ddgrkgmm7sj4jpwn";
+  /* Settings come from assets/config.js; these are the fallbacks if it is
+     missing or a value has been deleted. */
+  var CFG = window.SITE_CONFIG || {};
+  var ACCOUNT = CFG.npub || "";
 
-  /* nos.lol currently holds the full archive; the rest are for redundancy so
-     the site never depends on a single relay staying up. */
-  var RELAYS = [
-    "wss://nos.lol",
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://relay.nostr.band",
-    "wss://nostr.wine",
-    "wss://purplepag.es",
-    "wss://relay.snort.social",
-    "wss://nostr.bitcoiner.social",
-    "wss://relayable.org"
-  ];
+  var RELAYS = (Array.isArray(CFG.relays) ? CFG.relays : [])
+    .map(function (r) { return String(r).trim(); })
+    .filter(function (r, i, all) { return /^wss?:\/\/.+/i.test(r) && all.indexOf(r) === i; });
 
+  var PER_PAGE = Math.max(1, parseInt(CFG.perPage, 10) || 20);
   var CACHE_KEY = "nbn-events-v1";   // scoped per account below, so switching keys never shows stale posts
   var TIMEOUT_MS = 9000;
 
@@ -98,6 +90,8 @@
 
   var PUBKEY, KEY_ERROR = "";
   try {
+    if (!ACCOUNT) throw new Error("no npub set");
+    if (!RELAYS.length) throw new Error("no relays set");
     PUBKEY = bech32Decode(ACCOUNT);
     CACHE_KEY += "-" + PUBKEY.slice(0, 12);
   } catch (e) {
@@ -134,6 +128,7 @@
   var profile = null;
   var relayStats = {};
   var renderQueued = false;
+  var lastViewKey = "";
 
   function loadCache() {
     try {
@@ -245,15 +240,46 @@
     return html;
   }
 
+  function pageNum(s) {
+    return Math.max(1, parseInt(s, 10) || 1);
+  }
+
+  function pager(base, page, pages) {
+    if (pages < 2) return "";
+    var html = '<nav class="pager" aria-label="Pages">';
+    html += page > 1
+      ? '<a class="pager-btn" href="' + base + (page - 1) + '" rel="prev">← Newer</a>'
+      : '<span class="pager-btn is-off">← Newer</span>';
+    html += '<span class="pager-info">Page ' + page + ' of ' + pages + '</span>';
+    html += page < pages
+      ? '<a class="pager-btn" href="' + base + (page + 1) + '" rel="next">Older →</a>'
+      : '<span class="pager-btn is-off">Older →</span>';
+    return html + '</nav>';
+  }
+
+  /* Every list of posts renders the same way: a grid of cards plus a pager. */
+  function postList(items, base, want, emptyMsg) {
+    if (!items.length) return '<p class="empty">' + emptyMsg + '</p>';
+    var pages = Math.max(1, Math.ceil(items.length / PER_PAGE));
+    // Posts keep arriving, so a bookmarked page number can outrun the list.
+    var page = Math.min(want || 1, pages);
+    var slice = items.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+    return '<div class="feed-grid">' + slice.map(function (e) { return noteCard(e); }).join("") +
+           '</div>' + pager(base, page, pages);
+  }
+
   // ---------- routing ----------
   function route() {
     var h = (location.hash || "#/").replace(/^#/, "");
     var parts = h.split("/").filter(Boolean);
-    if (parts[0] === "tag" && parts[1]) return { name: "tag", tag: decodeURIComponent(parts[1]) };
+    if (parts[0] === "tag" && parts[1]) {
+      return { name: "tag", tag: decodeURIComponent(parts[1]), page: pageNum(parts[2]) };
+    }
     if (parts[0] === "note" && parts[1]) return { name: "note", id: parts[1] };
+    if (parts[0] === "page" && parts[1]) return { name: "home", page: pageNum(parts[1]) };
     if (parts[0] === "tags") return { name: "tags" };
     if (parts[0] === "about") return { name: "about" };
-    return { name: "home" };
+    return { name: "home", page: 1 };
   }
 
   function setActiveTab(name) {
@@ -305,8 +331,8 @@
       var hits = list.filter(function (e) { return hashtagsOf(e).indexOf(want) !== -1; });
       html += '<a class="backlink" href="#/tags">← All topics</a>';
       html += '<h2 class="section-title">Posts tagged #' + esc(r.tag) + ' <span class="count">(' + hits.length + ')</span></h2>';
-      html += hits.length ? hits.map(function (e) { return noteCard(e); }).join("")
-                          : '<p class="empty">Nothing tagged #' + esc(r.tag) + '.</p>';
+      html += postList(hits, "#/tag/" + encodeURIComponent(r.tag) + "/", r.page,
+                       "Nothing tagged #" + esc(r.tag) + ".");
     } else if (r.name === "about") {
       html += '<h2 class="section-title">About</h2><div class="about-card">';
       html += '<p>' + esc((profile && profile.about) || "Grassroots Bitcoin community in Northamptonshire, England.") + '</p><dl>';
@@ -318,11 +344,14 @@
     } else {
       var roots = list.filter(function (e) { return !isReply(e); });
       var shown = roots.length ? roots : list;
-      html += shown.length ? shown.map(function (e) { return noteCard(e); }).join("")
-                           : '<p class="empty">No posts loaded yet.</p>';
+      html += postList(shown, "#/page/", r.page, "No posts loaded yet.");
     }
+    $("main").classList.toggle("is-wide", r.name === "home" || r.name === "tag");
     content.innerHTML = html;
-    if (r.name !== "home" || !location.hash) window.scrollTo(0, 0);
+
+    // Only jump to the top on a real navigation, not when relays deliver more posts.
+    var key = r.name + ":" + (r.page || "") + (r.tag || "") + (r.id || "");
+    if (key !== lastViewKey) { lastViewKey = key; window.scrollTo(0, 0); }
   }
 
   function queueRender() {
@@ -380,8 +409,8 @@
   // ---------- boot ----------
   if (KEY_ERROR) {
     $("content").innerHTML =
-      '<p class="empty">Configuration problem: the ACCOUNT key at the top of ' +
-      'assets/app.js is not a valid npub (' + esc(KEY_ERROR) + ').</p>';
+      '<p class="empty">Configuration problem in <code>assets/config.js</code>: ' +
+      esc(KEY_ERROR) + '.</p>';
     return;
   }
 
