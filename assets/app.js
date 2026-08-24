@@ -3,7 +3,9 @@
 (function () {
   "use strict";
 
-  var PUBKEY = "6eb13d8905dd6c1498d313308fc91593acf2af8a36571cf944369ad40ec8defd";
+  /* The account this site publishes. Paste an npub1… key here — a bare
+     64-character hex pubkey is accepted too. */
+  var ACCOUNT = "npub1d6cnmzg9m4kpfxxnzvcgljg4jwk09tu2xet3e72yx6ddgrkgmm7sj4jpwn";
 
   /* nos.lol currently holds the full archive; the rest are for redundancy so
      the site never depends on a single relay staying up. */
@@ -19,7 +21,7 @@
     "wss://relayable.org"
   ];
 
-  var CACHE_KEY = "nbn-events-v1";
+  var CACHE_KEY = "nbn-events-v1";   // scoped per account below, so switching keys never shows stale posts
   var TIMEOUT_MS = 9000;
 
   // ---------- bech32 (NIP-19 npub / note identifiers) ----------
@@ -66,6 +68,40 @@
     var out = hrp + "1";
     data.concat(checksum).forEach(function (d) { out += CHARSET.charAt(d); });
     return out;
+  }
+
+  function bech32Decode(str) {
+    var s = String(str).trim().replace(/^nostr:/, "");
+    if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase();
+
+    var lower = s.toLowerCase();
+    if (s !== lower && s !== s.toUpperCase()) throw new Error("mixed case");
+    s = lower;
+
+    var pos = s.lastIndexOf("1");
+    if (pos < 1 || pos + 7 > s.length) throw new Error("not a bech32 string");
+    var hrp = s.slice(0, pos), data = [], i;
+    for (i = pos + 1; i < s.length; ++i) {
+      var d = CHARSET.indexOf(s.charAt(i));
+      if (d === -1) throw new Error("bad character '" + s.charAt(i) + "'");
+      data.push(d);
+    }
+    if (polymod(hrpExpand(hrp).concat(data)) !== 1) throw new Error("bad checksum");
+    if (hrp !== "npub") throw new Error("expected an npub, got '" + hrp + "'");
+
+    var bytes = convertBits(data.slice(0, -6), 5, 8, false);
+    if (bytes.length !== 32) throw new Error("wrong key length");
+    var hex = "";
+    for (i = 0; i < bytes.length; ++i) hex += ("0" + bytes[i].toString(16)).slice(-2);
+    return hex;
+  }
+
+  var PUBKEY, KEY_ERROR = "";
+  try {
+    PUBKEY = bech32Decode(ACCOUNT);
+    CACHE_KEY += "-" + PUBKEY.slice(0, 12);
+  } catch (e) {
+    KEY_ERROR = e.message;
   }
 
   // ---------- tiny helpers ----------
@@ -342,6 +378,13 @@
   }
 
   // ---------- boot ----------
+  if (KEY_ERROR) {
+    $("content").innerHTML =
+      '<p class="empty">Configuration problem: the ACCOUNT key at the top of ' +
+      'assets/app.js is not a valid npub (' + esc(KEY_ERROR) + ').</p>';
+    return;
+  }
+
   window.addEventListener("hashchange", render);
 
   loadCache();
