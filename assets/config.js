@@ -24,6 +24,17 @@ var SITE_CONFIG = {
     about: true
   },
 
+  /* Contact details shown on the About page. Leave a value empty ("") to hide
+     that row. `links` is your own list — add as many as you like. */
+  contact: {
+    email: "",
+    telegram: "",
+    links: [
+      // { label: "Website",  url: "https://example.com" },
+      // { label: "Meetup",   url: "https://meetup.com/..." }
+    ]
+  },
+
   /* Relays to read from. The site queries all of them at once and merges the
      results, so extras only add redundancy — if one is down or slow, the rest
      still deliver. nos.lol currently holds the fullest archive. */

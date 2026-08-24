@@ -14,6 +14,11 @@
 
   var FAVICON = String(CFG.favicon || "").trim();
 
+  var CONTACT = CFG.contact || {};
+  var LINKS = (Array.isArray(CONTACT.links) ? CONTACT.links : []).filter(function (l) {
+    return l && String(l.url || "").trim() && String(l.label || "").trim();
+  });
+
   var PER_PAGE = Math.max(1, parseInt(CFG.perPage, 10) || 20);
 
   /* Optional pages, all on unless config.js says otherwise. */
@@ -327,17 +332,99 @@
     var when = e.allDay
       ? fmtDate(e.start)
       : fmtDate(e.start) + " · " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    var img = e.image || imagesOf(e.ev)[0] || "";
 
-    var html = '<article class="event' + ((e.end || e.start) < Date.now() / 1000 ? " is-past" : "") + '">';
+    var html = '<article class="event' + (isPast(e) ? " is-past" : "") + '" id="ev-' + esc(e.ev.id) + '">';
+    html += '<div class="event-head">';
     html += '<div class="event-date"><span class="event-day">' + d.getDate() + '</span>' +
             '<span class="event-mon">' + d.toLocaleDateString("en-GB", { month: "short" }) + '</span></div>';
-    html += '<div class="event-main"><h3 class="event-title">' + esc(e.title) + '</h3>';
+    html += '<div class="event-headings"><h3 class="event-title">' + esc(e.title) + '</h3>';
     html += '<p class="event-when">' + esc(when) + '</p>';
     if (e.location) html += '<p class="event-where">' + esc(e.location) + '</p>';
-    if (e.summary) html += '<div class="event-summary">' + renderContent(e.summary) + '</div>';
+    html += '</div></div>';
+
+    if (e.summary || img) {
+      html += '<div class="event-body">';
+      html += '<div class="event-summary">' + (e.summary ? renderContent(e.summary) : "") + '</div>';
+      if (img) html += '<img class="event-img" src="' + esc(img) + '" alt="" loading="lazy">';
+      html += '</div>';
+    }
     html += '<div class="note-foot"><a class="permalink" href="https://njump.me/' + nid +
             '" target="_blank" rel="noopener noreferrer">View on Nostr ↗</a></div>';
-    return html + '</div></article>';
+    return html + '</article>';
+  }
+
+  /* ---- month calendar shown above the events ---- */
+  var MONTH_MS = null;          // first day of the month on show
+  var pendingScroll = "";       // event card to scroll to after the next render
+
+  function isPast(e) {
+    return (e.end || e.start) < Date.now() / 1000;
+  }
+
+  function monthGrid(cal) {
+    if (!cal.all.length) return "";
+
+    // Default to the month of the next event, or this month if none are due.
+    if (MONTH_MS === null) {
+      var seed = new Date((cal.upcoming[0] || cal.all[0]).start * 1000);
+      MONTH_MS = new Date(seed.getFullYear(), seed.getMonth(), 1).getTime();
+    }
+    var cur = new Date(MONTH_MS);
+    var year = cur.getFullYear(), month = cur.getMonth();
+
+    // Bucket this month's events by day number.
+    var byDay = {};
+    cal.all.forEach(function (e) {
+      var d = new Date(e.start * 1000);
+      if (d.getFullYear() !== year || d.getMonth() !== month) return;
+      (byDay[d.getDate()] = byDay[d.getDate()] || []).push(e);
+    });
+
+    var first = new Date(year, month, 1);
+    var lead = (first.getDay() + 6) % 7;                 // weeks start Monday
+    var days = new Date(year, month + 1, 0).getDate();
+    var today = new Date();
+    var isThisMonth = today.getFullYear() === year && today.getMonth() === month;
+
+    var html = '<div class="cal">';
+    html += '<div class="cal-head">';
+    html += '<button type="button" class="cal-nav" data-cal="prev" aria-label="Previous month">‹</button>';
+    html += '<span class="cal-month">' +
+            cur.toLocaleDateString("en-GB", { month: "long", year: "numeric" }) + '</span>';
+    html += '<button type="button" class="cal-nav" data-cal="next" aria-label="Next month">›</button>';
+    html += '</div><div class="cal-grid">';
+    ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach(function (n) {
+      html += '<span class="cal-dow">' + n + '</span>';
+    });
+    for (var i = 0; i < lead; i++) html += '<span class="cal-cell is-blank"></span>';
+
+    for (var day = 1; day <= days; day++) {
+      var list = byDay[day] || [];
+      var cls = "cal-cell" + (list.length ? " has-events" : "") +
+                (isThisMonth && today.getDate() === day ? " is-today" : "");
+      if (!list.length) {
+        html += '<span class="' + cls + '">' + day + '</span>';
+        continue;
+      }
+      var titles = list.map(function (e) { return e.title; }).join(", ");
+      html += '<a class="' + cls + '" href="#/calendar" data-ev="' + esc(list[0].ev.id) + '" title="' +
+              esc(titles) + '"><span class="cal-num">' + day + '</span><span class="cal-dots">' +
+              list.slice(0, 3).map(function () { return '<i></i>'; }).join("") + '</span></a>';
+    }
+    return html + '</div></div>';
+  }
+
+  /* Day links jump to the card, paging there first when it is further down. */
+  function jumpToEvent(id) {
+    var all = calendarEvents().all;
+    var idx = -1;
+    all.forEach(function (e, i) { if (e.ev.id === id) idx = i; });
+    if (idx === -1) return;
+    pendingScroll = "ev-" + id;
+    var target = "#/calendar/" + (Math.floor(idx / PER_PAGE) + 1);
+    if (location.hash === target) render();
+    else location.hash = target;
   }
 
   function pageNum(s) {
@@ -479,14 +566,32 @@
       var cal = calendarEvents();
       html += '<h2 class="section-title">Events <span class="count">(' +
               cal.upcoming.length + ' upcoming)</span></h2>';
+      html += monthGrid(cal);
       html += pagedList(cal.all, "#/calendar/", r.page,
-                        "No calendar events published yet.", "event-list", eventCard);
+                        "No calendar events published yet.", "feed-grid", eventCard);
     } else if (r.name === "about") {
       html += '<h2 class="section-title">About</h2><div class="about-card">';
       html += '<p>' + esc((profile && profile.about) || "Grassroots Bitcoin community in Northamptonshire, England.") + '</p><dl>';
       if (profile && profile.nip05) html += '<dt>Nostr address</dt><dd>' + esc(profile.nip05) + '</dd>';
       if (profile && profile.lud16) html += '<dt>Lightning</dt><dd>' + esc(profile.lud16) + '</dd>';
       html += '<dt>Public key</dt><dd>' + esc(npub) + '</dd>';
+
+      var email = String(CONTACT.email || "").trim();
+      if (email) html += '<dt>Email</dt><dd><a href="mailto:' + esc(email) + '">' + esc(email) + '</a></dd>';
+
+      var tg = String(CONTACT.telegram || "").trim();
+      if (tg) {
+        // Accept a full URL, an @handle or a bare handle.
+        var tgUrl = /^https?:\/\//i.test(tg) ? tg : "https://t.me/" + tg.replace(/^@/, "");
+        html += '<dt>Telegram</dt><dd><a href="' + esc(tgUrl) + '" target="_blank" rel="noopener noreferrer">' +
+                esc(tg) + '</a></dd>';
+      }
+
+      LINKS.forEach(function (l) {
+        html += '<dt>' + esc(l.label) + '</dt><dd><a href="' + esc(l.url) +
+                '" target="_blank" rel="noopener noreferrer">' + esc(l.url) + '</a></dd>';
+      });
+
       html += '<dt>Posts loaded</dt><dd>' + list.length + '</dd>';
       html += '</dl></div>';
     } else {
@@ -495,12 +600,22 @@
       html += postList(shown, "#/page/", r.page, "No posts loaded yet.");
     }
     $("main").classList.toggle("is-wide",
-      r.name === "home" || r.name === "tag" || r.name === "gallery");
+      r.name === "home" || r.name === "tag" || r.name === "gallery" || r.name === "calendar");
     content.innerHTML = html;
 
     // Only jump to the top on a real navigation, not when relays deliver more posts.
     var key = r.name + ":" + (r.page || "") + (r.tag || "") + (r.id || "");
     if (key !== lastViewKey) { lastViewKey = key; window.scrollTo(0, 0); }
+
+    if (pendingScroll) {
+      var card = document.getElementById(pendingScroll);
+      pendingScroll = "";
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        card.classList.add("is-flagged");
+        setTimeout(function () { card.classList.remove("is-flagged"); }, 1600);
+      }
+    }
   }
 
   function queueRender() {
@@ -562,6 +677,18 @@
       esc(KEY_ERROR) + '.</p>';
     return;
   }
+
+  $("content").addEventListener("click", function (ev) {
+    var nav = ev.target.closest("[data-cal]");
+    if (nav) {
+      ev.preventDefault();
+      var d = new Date(MONTH_MS);
+      MONTH_MS = new Date(d.getFullYear(), d.getMonth() + (nav.dataset.cal === "next" ? 1 : -1), 1).getTime();
+      return render();
+    }
+    var day = ev.target.closest("[data-ev]");
+    if (day) { ev.preventDefault(); jumpToEvent(day.dataset.ev); }
+  });
 
   setFavicon();
   buildTabs();
