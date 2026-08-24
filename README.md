@@ -1,9 +1,11 @@
+A simple website that displays your nostr posts
+
 
 ## How this works
 
 There is **no database and no backend**. The site is plain HTML, CSS and JavaScript.
 When someone opens the page it connects directly to public Nostr relays and reads
-the posts published by the community's Nostr account.
+the posts published by your Nostr account.
 
 **To publish a new post, just post on Nostr as usual.** It appears on the website
 automatically — there is nothing to rebuild, upload or deploy.
