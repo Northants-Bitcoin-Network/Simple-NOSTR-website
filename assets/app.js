@@ -12,6 +12,8 @@
     .map(function (r) { return String(r).trim(); })
     .filter(function (r, i, all) { return /^wss?:\/\/.+/i.test(r) && all.indexOf(r) === i; });
 
+  var FAVICON = String(CFG.favicon || "").trim();
+
   var PER_PAGE = Math.max(1, parseInt(CFG.perPage, 10) || 20);
 
   /* Optional pages, all on unless config.js says otherwise. */
@@ -402,6 +404,12 @@
     { key: "about", href: "#/about", label: "About", route: "about" }
   ];
 
+  /* Falls back to the profile picture, which arrives after the relays reply. */
+  function setFavicon() {
+    var href = FAVICON || (profile && profile.picture) || "";
+    if (href) $("favicon").href = href;
+  }
+
   function buildTabs() {
     $("tabs").innerHTML = TABS.filter(function (t) { return !t.key || PAGES[t.key]; })
       .map(function (t) {
@@ -432,6 +440,7 @@
       if (profile.banner) $("banner").style.backgroundImage = "url('" + profile.banner.replace(/'/g, "%27") + "')";
       if (profile.nip05) { var n = $("nip05"); n.textContent = "✓ " + profile.nip05; n.hidden = false; }
     }
+    setFavicon();
     var npub = bech32Encode("npub", PUBKEY);
     var nl = $("npub-link");
     nl.textContent = npub.slice(0, 14) + "…" + npub.slice(-6);
@@ -554,6 +563,7 @@
     return;
   }
 
+  setFavicon();
   buildTabs();
   window.addEventListener("hashchange", render);
 

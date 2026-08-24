@@ -5,6 +5,10 @@ var SITE_CONFIG = {
      Paste an npub1… key here (a bare 64-character hex pubkey also works). */
   npub: "npub1d6cnmzg9m4kpfxxnzvcgljg4jwk09tu2xet3e72yx6ddgrkgmm7sj4jpwn",
 
+  /* Browser tab icon. A URL, a local file like "assets/icon.png", or leave it
+     empty ("") to use the account's Nostr profile picture. */
+  favicon: "https://cdn.nostr.build/i/95ddaad6c4b9c39f65af30c407eda40abaa10de13ed6c998583e56423dbe97eb.jpg",
+
   /* How many posts appear on each page of the feed. */
   perPage: 20,
 
