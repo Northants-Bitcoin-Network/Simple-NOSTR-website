@@ -332,13 +332,6 @@
     });
   }
 
-  function updateStatus(text, done) {
-    var s = $("status");
-    if (done) { s.hidden = true; return; }
-    s.hidden = false;
-    $("status-text").textContent = text;
-  }
-
   function summarise() {
     var ok = 0, total = 0;
     Object.keys(relayStats).forEach(function (r) {
@@ -352,15 +345,11 @@
   window.addEventListener("hashchange", render);
 
   loadCache();
-  if (events.size) { updateStatus("", true); render(); }
-  else render();
-
-  updateStatus(events.size ? "" : "Connecting to Nostr relays…", events.size > 0);
+  render();
 
   Promise.all(RELAYS.map(connect)).then(function () {
     absorbProfile();
     saveCache();
-    updateStatus("", true);
     render();
     summarise();
     if (!notes().length) {

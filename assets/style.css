@@ -66,14 +66,6 @@ img { max-width: 100%; height: auto; }
 
 /* ---- layout ---- */
 main { max-width: var(--maxw); margin: 0 auto; padding: 22px 20px 60px; }
-.status { display: flex; align-items: center; gap: .6rem; justify-content: center; color: var(--muted); padding: 2.5rem 1rem; }
-.spinner {
-  width: 17px; height: 17px; border: 2.5px solid var(--border);
-  border-bottom-color: var(--brand); border-radius: 50%;
-  display: inline-block; animation: spin .9s linear infinite; flex: none;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
 
 /* ---- note cards ---- */
 .note {
