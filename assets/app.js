@@ -79,10 +79,8 @@
     return out;
   }
 
-  function bech32Decode(str) {
+  function bech32Parse(str) {
     var s = String(str).trim().replace(/^nostr:/, "");
-    if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase();
-
     var lower = s.toLowerCase();
     if (s !== lower && s !== s.toUpperCase()) throw new Error("mixed case");
     s = lower;
@@ -96,13 +94,38 @@
       data.push(d);
     }
     if (polymod(hrpExpand(hrp).concat(data)) !== 1) throw new Error("bad checksum");
-    if (hrp !== "npub") throw new Error("expected an npub, got '" + hrp + "'");
+    return { hrp: hrp, bytes: convertBits(data.slice(0, -6), 5, 8, false) };
+  }
 
-    var bytes = convertBits(data.slice(0, -6), 5, 8, false);
-    if (bytes.length !== 32) throw new Error("wrong key length");
+  function toHex(bytes) {
     var hex = "";
-    for (i = 0; i < bytes.length; ++i) hex += ("0" + bytes[i].toString(16)).slice(-2);
+    for (var i = 0; i < bytes.length; ++i) hex += ("0" + bytes[i].toString(16)).slice(-2);
     return hex;
+  }
+
+  function bech32Decode(str) {
+    var s = String(str).trim().replace(/^nostr:/, "");
+    if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase();
+    var r = bech32Parse(s);
+    if (r.hrp !== "npub") throw new Error("expected an npub, got '" + r.hrp + "'");
+    if (r.bytes.length !== 32) throw new Error("wrong key length");
+    return toHex(r.bytes);
+  }
+
+  /* npub is the bare key; nprofile wraps it in TLV records, type 0 being the key. */
+  function mentionKey(id) {
+    try {
+      var r = bech32Parse(id);
+      if (r.hrp === "npub") return r.bytes.length === 32 ? toHex(r.bytes) : "";
+      if (r.hrp !== "nprofile") return "";
+      var b = r.bytes, i = 0;
+      while (i + 2 <= b.length) {
+        var type = b[i], len = b[i + 1];
+        if (type === 0 && len === 32) return toHex(b.slice(i + 2, i + 34));
+        i += 2 + len;
+      }
+    } catch (err) { /* not a valid identifier — leave the text alone */ }
+    return "";
   }
 
   var PUBKEY, KEY_ERROR = "";
@@ -160,6 +183,65 @@
     try {
       localStorage.setItem(CACHE_KEY, JSON.stringify(Array.from(events.values()).slice(0, 400)));
     } catch (e) { /* quota or blocked — the site works fine without the cache */ }
+  }
+
+  /* ---- names for mentioned accounts ----
+     Their kind 0 events are not part of this account's feed, so they are
+     fetched on demand and cached; the view re-renders as each one lands. */
+  var NAME_KEY = "nbn-names-v1";
+  var names = {};
+  try { names = JSON.parse(localStorage.getItem(NAME_KEY) || "{}") || {}; } catch (e) { names = {}; }
+  var nameWanted = {};
+  var nameTimer = null;
+  var nameHooks = [];   // redraw callbacks for anything outside the main view
+
+  function needName(pk) {
+    if (!pk || names[pk] !== undefined || nameWanted[pk]) return;
+    nameWanted[pk] = true;
+    clearTimeout(nameTimer);
+    nameTimer = setTimeout(fetchNames, 250);
+  }
+
+  function fetchNames() {
+    var want = Object.keys(nameWanted).filter(function (pk) { return names[pk] === undefined; });
+    if (!want.length || !RELAYS.length) return;
+    var found = false;
+
+    RELAYS.forEach(function (url) {
+      var ws;
+      try { ws = new WebSocket(url); } catch (e) { return; }
+      var timer = setTimeout(shut, TIMEOUT_MS);
+
+      function shut() {
+        clearTimeout(timer);
+        try { ws.close(); } catch (e) { /* already closed */ }
+      }
+
+      ws.onopen = function () {
+        ws.send(JSON.stringify(["REQ", "names", { authors: want, kinds: [0], limit: want.length }]));
+      };
+      ws.onerror = shut;
+      ws.onmessage = function (msg) {
+        var data;
+        try { data = JSON.parse(msg.data); } catch (e) { return; }
+        if (data[0] === "EOSE") return shut();
+        if (data[0] !== "EVENT" || !data[2] || data[2].kind !== 0) return;
+        var ev = data[2], meta;
+        try { meta = JSON.parse(ev.content); } catch (e) { return; }
+        var name = String(meta.display_name || meta.name || "").trim().slice(0, 40);
+        if (!name || names[ev.pubkey]) return;
+        names[ev.pubkey] = name;
+        found = true;
+        try { localStorage.setItem(NAME_KEY, JSON.stringify(names)); } catch (e) { /* blocked */ }
+        queueRender();
+        nameHooks.forEach(function (fn) { fn(); });
+      };
+      ws.onclose = function () {
+        clearTimeout(timer);
+        // Anything still unnamed after every relay has spoken keeps its short form.
+        if (!found) want.forEach(function (pk) { if (names[pk] === undefined) names[pk] = ""; });
+      };
+    });
   }
 
   function absorbProfile() {
@@ -249,6 +331,7 @@
         ev: ev, start: start, end: end || 0, allDay: allDay,
         title: tagValue(ev, "title") || tagValue(ev, "name") || "Untitled event",
         location: tagValue(ev, "location"),
+        geohash: tagValue(ev, "g"),
         image: tagValue(ev, "image"),
         summary: tagValue(ev, "summary") || String(ev.content || "")
       });
@@ -285,8 +368,11 @@
         }
       } else if (m[2]) {
         var id = m[2];
+        var pk = mentionKey(id);
+        if (pk) needName(pk);
+        var label = pk && names[pk] ? "@" + esc(names[pk]) : esc(id.slice(0, 12)) + "…";
         out += '<a class="mention" href="https://njump.me/' + esc(id) +
-               '" target="_blank" rel="noopener noreferrer">' + esc(id.slice(0, 12)) + '…</a>';
+               '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
       } else if (m[4]) {
         var tag = m[4];
         out += esc(m[3]) + '<a class="hashtag" href="#/tag/' + encodeURIComponent(tag.toLowerCase()) +
@@ -297,21 +383,29 @@
     return out;
   }
 
+  function hasSelection() {
+    var sel = window.getSelection();
+    return !!sel && !sel.isCollapsed && String(sel).length > 0;
+  }
+
   function noteCard(ev, opts) {
     opts = opts || {};
-    var nid = bech32Encode("note", ev.id);
     var tags = hashtagsOf(ev);
-    var html = '<article class="note">';
+    // In a feed the whole card opens the note in the overlay; on its own page
+    // there is nowhere to go.
+    var open = opts.single ? "" : ' data-note="' + esc(ev.id) + '" tabindex="0" role="button"';
+    var html = '<article class="note"' + open + '>';
     html += '<div class="note-head">';
     html += '<time class="note-date" datetime="' + new Date(ev.created_at * 1000).toISOString() + '">' +
             fmtDate(ev.created_at) + ' · ' + relTime(ev.created_at) + '</time>';
     if (isReply(ev)) html += '<span class="badge">Reply</span>';
     html += '</div>';
     html += '<div class="note-body">' + renderContent(ev.content) + '</div>';
+    // In a card the media is shown as one thumbnail below the text, so that
+    // clamping the text can never collide with it.
+    var thumb = opts.single ? "" : (imagesOf(ev)[0] || "");
+    if (thumb) html += '<img class="note-thumb" src="' + esc(thumb) + '" alt="" loading="lazy">';
     html += '<div class="note-foot">';
-    if (!opts.single) html += '<a class="permalink" href="#/note/' + nid + '">Permalink</a>';
-    html += '<a class="permalink" href="https://njump.me/' + nid +
-            '" target="_blank" rel="noopener noreferrer">View on Nostr ↗</a>';
     tags.forEach(function (t) {
       html += '<a class="hashtag" href="#/tag/' + encodeURIComponent(t) + '">#' + esc(t) + '</a>';
     });
@@ -328,13 +422,13 @@
 
   function eventCard(e) {
     var d = new Date(e.start * 1000);
-    var nid = bech32Encode("note", e.ev.id);
     var when = e.allDay
       ? fmtDate(e.start)
       : fmtDate(e.start) + " · " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
     var img = e.image || imagesOf(e.ev)[0] || "";
 
-    var html = '<article class="event' + (isPast(e) ? " is-past" : "") + '" id="ev-' + esc(e.ev.id) + '">';
+    var html = '<article class="event' + (isPast(e) ? " is-past" : "") + '" id="ev-' + esc(e.ev.id) +
+               '" data-event="' + esc(e.ev.id) + '" tabindex="0" role="button">';
     html += '<div class="event-head">';
     html += '<div class="event-date"><span class="event-day">' + d.getDate() + '</span>' +
             '<span class="event-mon">' + d.toLocaleDateString("en-GB", { month: "short" }) + '</span></div>';
@@ -343,20 +437,16 @@
     if (e.location) html += '<p class="event-where">' + esc(e.location) + '</p>';
     html += '</div></div>';
 
-    if (e.summary || img) {
-      html += '<div class="event-body">';
-      html += '<div class="event-summary">' + (e.summary ? renderContent(e.summary) : "") + '</div>';
-      if (img) html += '<img class="event-img" src="' + esc(img) + '" alt="" loading="lazy">';
-      html += '</div>';
-    }
-    html += '<div class="note-foot"><a class="permalink" href="https://njump.me/' + nid +
-            '" target="_blank" rel="noopener noreferrer">View on Nostr ↗</a></div>';
+    // Always emitted, so every card is the same two rows and can share them.
+    html += '<div class="event-body">';
+    html += '<div class="event-summary">' + (e.summary ? renderContent(e.summary) : "") + '</div>';
+    if (img) html += '<img class="event-img" src="' + esc(img) + '" alt="" loading="lazy">';
+    html += '</div>';
     return html + '</article>';
   }
 
   /* ---- month calendar shown above the events ---- */
   var MONTH_MS = null;          // first day of the month on show
-  var pendingScroll = "";       // event card to scroll to after the next render
 
   function isPast(e) {
     return (e.end || e.start) < Date.now() / 1000;
@@ -408,23 +498,312 @@
         continue;
       }
       var titles = list.map(function (e) { return e.title; }).join(", ");
-      html += '<a class="' + cls + '" href="#/calendar" data-ev="' + esc(list[0].ev.id) + '" title="' +
-              esc(titles) + '"><span class="cal-num">' + day + '</span><span class="cal-dots">' +
+      html += '<a class="' + cls + '" href="#/calendar" data-day="' + year + '-' + month + '-' + day +
+              '" title="' + esc(titles) + '"><span class="cal-num">' + day + '</span><span class="cal-dots">' +
               list.slice(0, 3).map(function () { return '<i></i>'; }).join("") + '</span></a>';
     }
     return html + '</div></div>';
   }
 
-  /* Day links jump to the card, paging there first when it is further down. */
-  function jumpToEvent(id) {
-    var all = calendarEvents().all;
-    var idx = -1;
-    all.forEach(function (e, i) { if (e.ev.id === id) idx = i; });
-    if (idx === -1) return;
-    pendingScroll = "ev-" + id;
-    var target = "#/calendar/" + (Math.floor(idx / PER_PAGE) + 1);
-    if (location.hash === target) render();
-    else location.hash = target;
+  /* NIP-52 puts coordinates in a "g" geohash tag; decode it for the map. */
+  var GEO32 = "0123456789bcdefghjkmnpqrstuvwxyz";
+
+  function geohashDecode(hash) {
+    var lat = [-90, 90], lon = [-180, 180], even = true;
+    var h = String(hash).toLowerCase();
+    for (var i = 0; i < h.length; i++) {
+      var idx = GEO32.indexOf(h.charAt(i));
+      if (idx === -1) return null;
+      for (var b = 4; b >= 0; b--) {
+        var range = even ? lon : lat;
+        var mid = (range[0] + range[1]) / 2;
+        if ((idx >> b) & 1) range[0] = mid; else range[1] = mid;
+        even = !even;
+      }
+    }
+    if (!h.length) return null;
+    return { lat: (lat[0] + lat[1]) / 2, lon: (lon[0] + lon[1]) / 2 };
+  }
+
+  function mapFrame(pt) {
+    var d = 0.006;   // roughly a few streets across
+    var box = [pt.lon - d, pt.lat - d / 2, pt.lon + d, pt.lat + d / 2].join(",");
+    var osm = "https://www.openstreetmap.org/?mlat=" + pt.lat + "&mlon=" + pt.lon + "#map=16/" + pt.lat + "/" + pt.lon;
+    return '<iframe loading="lazy" title="Map" ' +
+           'src="https://www.openstreetmap.org/export/embed.html?bbox=' + encodeURIComponent(box) +
+           '&amp;layer=mapnik&amp;marker=' + pt.lat + "," + pt.lon + '"></iframe>' +
+           '<a class="maplink" href="' + esc(osm) + '" target="_blank" rel="noopener noreferrer">Open map \u2197</a>';
+  }
+
+  function searchLink(q) {
+    return '<a class="maplink" href="https://www.openstreetmap.org/search?query=' +
+           encodeURIComponent(q) + '" target="_blank" rel="noopener noreferrer">Find on map \u2197</a>';
+  }
+
+  /* Look the address up with Nominatim. Results are cached so a repeat visit
+     costs nothing, and lookups are spaced out to stay inside their usage policy. */
+  var GEO_KEY = "nbn-geocache-v2";   // bumped: v1 cached misses from the single-term search
+  var geoCache = {};
+  try { geoCache = JSON.parse(localStorage.getItem(GEO_KEY) || "{}") || {}; } catch (err) { geoCache = {}; }
+  var geoQueue = Promise.resolve();
+
+  function lookup(q) {
+    var run = geoQueue.then(function () {
+      return fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(q), {
+        headers: { Accept: "application/json" }
+      }).then(function (r) {
+        return r.ok ? r.json() : [];
+      }).then(function (rows) {
+        return rows && rows[0] ? { lat: +rows[0].lat, lon: +rows[0].lon } : null;
+      }).catch(function () { return null; });
+    });
+    // One request per second, whatever the outcome of the last one.
+    geoQueue = run.then(function () {
+      return new Promise(function (done) { setTimeout(done, 1100); });
+    });
+    return run;
+  }
+
+  /* Venue names rarely resolve ("The Dog and Gun, Walton LE17 5RG" finds nothing),
+     so the search is retried on progressively plainer forms of the address. */
+  function geoTerms(q) {
+    var out = [q];
+    var parts = q.split(",").map(function (t) { return t.trim(); }).filter(Boolean);
+    while (parts.length > 1) {
+      parts = parts.slice(1);
+      out.push(parts.join(", "));
+    }
+    var pc = /\b[a-z]{1,2}\d[a-z\d]?\s*\d[a-z]{2}\b/i.exec(q);
+    if (pc) out.push(pc[0] + ", UK");
+    return out.filter(function (t, i) { return t && out.indexOf(t) === i; });
+  }
+
+  function geocode(q) {
+    if (Object.prototype.hasOwnProperty.call(geoCache, q)) return Promise.resolve(geoCache[q]);
+    var terms = geoTerms(q);
+
+    function tryNext(i) {
+      if (i >= terms.length) return Promise.resolve(null);
+      return lookup(terms[i]).then(function (pt) { return pt || tryNext(i + 1); });
+    }
+
+    return tryNext(0).then(function (pt) {
+      geoCache[q] = pt;
+      try { localStorage.setItem(GEO_KEY, JSON.stringify(geoCache)); } catch (err) { /* blocked */ }
+      return pt;
+    });
+  }
+
+  /* Maps land after the popup is on screen, so each event gets an empty slot first. */
+  function mapSlot(e) {
+    if (!e.location && !e.geohash) return "";
+    return '<div class="modal-map" id="map-' + esc(e.ev.id) + '"></div>';
+  }
+
+  function fillMaps(list) {
+    list.forEach(function (e) {
+      var slot = document.getElementById("map-" + e.ev.id);
+      if (!slot) return;
+      var fallback = e.geohash ? geohashDecode(e.geohash) : null;
+
+      function show(pt) {
+        // The popup may have been closed or replaced while we were waiting.
+        if (document.getElementById("map-" + e.ev.id) !== slot) return;
+        if (pt) slot.innerHTML = mapFrame(pt);
+        else slot.innerHTML = e.location ? searchLink(e.location) : "";
+      }
+
+      if (!e.location) return show(fallback);
+      slot.innerHTML = '<p class="modal-note">Finding the map\u2026</p>';
+      geocode(e.location).then(function (pt) { show(pt || fallback); });
+    });
+  }
+
+  /* ---- who is coming (NIP-52 kind 31925 RSVPs) ---- */
+  var RSVP_KIND = 31925;
+  var rsvpBy = {};      // "kind:pubkey:d" -> { pubkey: { status, at } }
+  var rsvpAsked = {};
+
+  function eventCoord(e) {
+    return e.ev.kind + ":" + e.ev.pubkey + ":" + tagValue(e.ev, "d");
+  }
+
+  /* RSVPs come from anyone, so they are fetched per event rather than with the feed. */
+  function loadRsvps(coord, onUpdate) {
+    if (rsvpAsked[coord]) return;
+    rsvpAsked[coord] = true;
+    rsvpBy[coord] = rsvpBy[coord] || {};
+
+    RELAYS.forEach(function (url) {
+      var ws;
+      try { ws = new WebSocket(url); } catch (e) { return; }
+      var timer = setTimeout(shut, TIMEOUT_MS);
+
+      function shut() {
+        clearTimeout(timer);
+        try { ws.close(); } catch (e) { /* already closed */ }
+      }
+
+      ws.onopen = function () {
+        ws.send(JSON.stringify(["REQ", "rsvp", { kinds: [RSVP_KIND], "#a": [coord], limit: 200 }]));
+      };
+      ws.onerror = shut;
+      ws.onclose = function () { clearTimeout(timer); };
+      ws.onmessage = function (msg) {
+        var data;
+        try { data = JSON.parse(msg.data); } catch (e) { return; }
+        if (data[0] === "EOSE") return shut();
+        if (data[0] !== "EVENT" || !data[2] || data[2].kind !== RSVP_KIND) return;
+        var ev = data[2];
+        // Only the latest reply from each person counts.
+        var cur = rsvpBy[coord][ev.pubkey];
+        if (cur && cur.at >= ev.created_at) return;
+        rsvpBy[coord][ev.pubkey] = {
+          at: ev.created_at,
+          status: (tagValue(ev, "status") || "accepted").toLowerCase()
+        };
+        needName(ev.pubkey);
+        onUpdate();
+      };
+    });
+  }
+
+  var RSVP_LABEL = { accepted: "Going", tentative: "Maybe", declined: "Not going" };
+
+  function rsvpName(pk) {
+    return names[pk] ? "@" + names[pk] : bech32Encode("npub", pk).slice(0, 12) + "\u2026";
+  }
+
+  function rsvpHtml(coord) {
+    var by = rsvpBy[coord] || {};
+    var keys = Object.keys(by);
+    if (!keys.length) return "";
+    var groups = { accepted: [], tentative: [], declined: [] };
+    keys.forEach(function (pk) {
+      (groups[by[pk].status] || groups.accepted).push(rsvpName(pk));
+    });
+
+    var rows = "";
+    ["accepted", "tentative", "declined"].forEach(function (k) {
+      if (!groups[k].length) return;
+      rows += '<p class="rsvp-row"><span class="rsvp-tag is-' + k + '">' + RSVP_LABEL[k] + ' ' +
+              groups[k].length + '</span>' + esc(groups[k].sort().join(", ")) + '</p>';
+    });
+    return '<h4 class="rsvp-head">Replies</h4>' + rows;
+  }
+
+  function fillRsvps(list) {
+    list.forEach(function (e) {
+      var slot = document.getElementById("rsvp-" + e.ev.id);
+      if (!slot) return;
+      var coord = eventCoord(e);
+
+      function draw() {
+        // The popup may have been closed or replaced while we were waiting.
+        if (document.getElementById("rsvp-" + e.ev.id) !== slot) return;
+        slot.innerHTML = rsvpHtml(coord);
+      }
+
+      draw();
+      nameHooks.push(draw);
+      loadRsvps(coord, draw);
+    });
+  }
+
+  /* ---- event popup ---- */
+  function eventDetail(e) {
+    var d = new Date(e.start * 1000);
+    var img = e.image || imagesOf(e.ev)[0] || "";
+    var when = e.allDay
+      ? fmtDate(e.start)
+      : fmtDate(e.start) + " · " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    if (e.end && !e.allDay) {
+      when += "–" + new Date(e.end * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    }
+
+    var html = '<article class="modal-event">';
+    html += '<h3 id="modal-title" class="modal-title">' + esc(e.title) + '</h3>';
+    html += '<p class="modal-when">' + esc(when) + (isPast(e) ? ' · <em>past</em>' : '') + '</p>';
+    if (e.location) html += '<p class="modal-where">' + esc(e.location) + '</p>';
+    if (img) html += '<img class="modal-img" src="' + esc(img) + '" alt="">';
+    if (e.summary) html += '<div class="modal-summary">' + renderContent(e.summary) + '</div>';
+    html += mapSlot(e);
+    html += '<div class="rsvp" id="rsvp-' + esc(e.ev.id) + '"></div>';
+    return html + '</article>';
+  }
+
+  function openDay(key) {
+    var parts = key.split("-");
+    var y = +parts[0], mo = +parts[1], da = +parts[2];
+    var list = calendarEvents().all.filter(function (e) {
+      var d = new Date(e.start * 1000);
+      return d.getFullYear() === y && d.getMonth() === mo && d.getDate() === da;
+    });
+    if (!list.length) return;
+
+    var head = list.length > 1
+      ? '<p class="modal-count">' + list.length + ' events on ' +
+        new Date(y, mo, da).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) + '</p>'
+      : "";
+    var days = keysIn("[data-day]");
+    setModalNav(days, days.indexOf(key), openDay);
+    showModal(head + list.map(eventDetail).join(""));
+    fillMaps(list);
+    fillRsvps(list);
+  }
+
+  /* The arrows walk whatever is currently on the page, in the order it is shown. */
+  var modalNav = null;
+
+  function keysIn(sel) {
+    return Array.prototype.map.call(document.querySelectorAll("#content " + sel), function (el) {
+      return el.dataset.note || el.dataset.day || el.dataset.event;
+    });
+  }
+
+  function setModalNav(list, i, open) {
+    modalNav = list.length > 1 && i !== -1 ? { list: list, i: i, open: open } : null;
+    $("modal-prev").hidden = $("modal-next").hidden = !modalNav;
+  }
+
+  function modalStep(d) {
+    if (!modalNav) return;
+    var n = modalNav.list.length;
+    modalNav.open(modalNav.list[(modalNav.i + d + n) % n]);
+    $("modal-panel").scrollTop = 0;
+  }
+
+  function showModal(html) {
+    $("modal-body").innerHTML = html;
+    $("modal").hidden = false;
+    document.body.classList.add("is-locked");
+  }
+
+  function openEvent(id) {
+    var hit = null;
+    calendarEvents().all.forEach(function (e) { if (e.ev.id === id) hit = e; });
+    if (!hit) return;
+    var list = keysIn("[data-event]");
+    setModalNav(list, list.indexOf(id), openEvent);
+    showModal(eventDetail(hit));
+    fillMaps([hit]);
+    fillRsvps([hit]);
+  }
+
+  function openNote(id) {
+    var ev = events.get(id);
+    if (!ev) return;
+    var list = keysIn("[data-note]");
+    setModalNav(list, list.indexOf(id), openNote);
+    showModal(noteCard(ev, { single: true }));
+  }
+
+  function closeModal() {
+    modalNav = null;
+    nameHooks.length = 0;
+    $("modal").hidden = true;
+    $("modal-body").innerHTML = "";
+    document.body.classList.remove("is-locked");
   }
 
   function pageNum(s) {
@@ -567,8 +946,18 @@
       html += '<h2 class="section-title">Events <span class="count">(' +
               cal.upcoming.length + ' upcoming)</span></h2>';
       html += monthGrid(cal);
-      html += pagedList(cal.all, "#/calendar/", r.page,
-                        "No calendar events published yet.", "feed-grid", eventCard);
+      if (!cal.all.length) {
+        html += '<p class="empty">No calendar events published yet.</p>';
+      } else {
+        // Everything still to come is listed in full; only the past is paged.
+        html += cal.upcoming.length
+          ? '<div class="feed-grid event-grid">' + cal.upcoming.map(eventCard).join("") + '</div>'
+          : '<p class="empty">Nothing coming up just now.</p>';
+        if (cal.past.length) {
+          html += '<h2 class="section-title">Past events <span class="count">(' + cal.past.length + ')</span></h2>';
+          html += pagedList(cal.past, "#/calendar/", r.page, "", "feed-grid event-grid", eventCard);
+        }
+      }
     } else if (r.name === "about") {
       html += '<h2 class="section-title">About</h2><div class="about-card">';
       html += '<p>' + esc((profile && profile.about) || "Grassroots Bitcoin community in Northamptonshire, England.") + '</p><dl>';
@@ -607,15 +996,6 @@
     var key = r.name + ":" + (r.page || "") + (r.tag || "") + (r.id || "");
     if (key !== lastViewKey) { lastViewKey = key; window.scrollTo(0, 0); }
 
-    if (pendingScroll) {
-      var card = document.getElementById(pendingScroll);
-      pendingScroll = "";
-      if (card) {
-        card.scrollIntoView({ behavior: "smooth", block: "center" });
-        card.classList.add("is-flagged");
-        setTimeout(function () { card.classList.remove("is-flagged"); }, 1600);
-      }
-    }
   }
 
   function queueRender() {
@@ -686,8 +1066,37 @@
       MONTH_MS = new Date(d.getFullYear(), d.getMonth() + (nav.dataset.cal === "next" ? 1 : -1), 1).getTime();
       return render();
     }
-    var day = ev.target.closest("[data-ev]");
-    if (day) { ev.preventDefault(); jumpToEvent(day.dataset.ev); }
+    var day = ev.target.closest("[data-day]");
+    if (day) { ev.preventDefault(); openDay(day.dataset.day); }
+
+    // Links, media controls and text selection keep their own behaviour.
+    var card = ev.target.closest("[data-note], [data-event]");
+    if (card && !ev.target.closest("a, button, video, audio, iframe") && !hasSelection()) {
+      if (card.dataset.note) openNote(card.dataset.note);
+      else openEvent(card.dataset.event);
+    }
+  });
+
+  $("content").addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    var card = ev.target.closest("[data-note], [data-event]");
+    if (card && ev.target === card) {
+      ev.preventDefault();
+      if (card.dataset.note) openNote(card.dataset.note);
+      else openEvent(card.dataset.event);
+    }
+  });
+
+  $("modal").addEventListener("click", function (ev) {
+    var nav = ev.target.closest("[data-nav]");
+    if (nav) return modalStep(+nav.dataset.nav);
+    if (ev.target.closest("[data-close]")) closeModal();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if ($("modal").hidden) return;
+    if (ev.key === "Escape") closeModal();
+    else if (ev.key === "ArrowLeft") modalStep(-1);
+    else if (ev.key === "ArrowRight") modalStep(1);
   });
 
   setFavicon();

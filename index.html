@@ -42,6 +42,16 @@
   <p class="relaystat" id="relaystat"></p>
 </footer>
 
+<div class="modal" id="modal" hidden>
+  <div class="modal-back" data-close></div>
+  <button type="button" class="modal-nav" id="modal-prev" data-nav="-1" aria-label="Previous" hidden>&lsaquo;</button>
+  <div class="modal-panel" id="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <button type="button" class="modal-x" data-close aria-label="Close">×</button>
+    <div id="modal-body"></div>
+  </div>
+  <button type="button" class="modal-nav" id="modal-next" data-nav="1" aria-label="Next" hidden>&rsaquo;</button>
+</div>
+
 <script src="assets/config.js"></script>
 <script src="assets/app.js"></script>
 </body>
