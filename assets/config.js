@@ -8,6 +8,18 @@ var SITE_CONFIG = {
   /* How many posts appear on each page of the feed. */
   perPage: 20,
 
+  /* Which pages appear in the navigation. Set one to false to hide both its
+     tab and its page; links to a hidden page fall back to the feed.
+       topics   - hashtags found in the posts, and the posts under each
+       gallery  - every image from the posts, as a grid
+       calendar - calendar events published by this account (NIP-52) */
+  pages: {
+    topics: true,
+    gallery: true,
+    calendar: true,
+    about: true
+  },
+
   /* Relays to read from. The site queries all of them at once and merges the
      results, so extras only add redundancy — if one is down or slow, the rest
      still deliver. nos.lol currently holds the fullest archive. */

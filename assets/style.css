@@ -90,6 +90,43 @@ main.is-wide { max-width: var(--maxw-wide); }
   .feed-grid .note-body { -webkit-line-clamp: none; display: block; }
 }
 
+/* ---- gallery ---- */
+.gallery-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.shot {
+  position: relative; display: block; border-radius: var(--radius); overflow: hidden;
+  border: 1px solid var(--border); background: var(--surface); aspect-ratio: 1 / 1;
+}
+.shot img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s ease; }
+.shot:hover img { transform: scale(1.04); }
+.shot-date {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: .8rem .7rem .5rem;
+  font-size: .75rem; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .68));
+  opacity: 0; transition: opacity .2s ease;
+}
+.shot:hover .shot-date, .shot:focus-visible .shot-date { opacity: 1; }
+@media (max-width: 900px) { .gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---- calendar events ---- */
+.event-list { display: flex; flex-direction: column; gap: 14px; }
+.event {
+  display: flex; gap: 1rem; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 20px;
+}
+.event.is-past { opacity: .6; }
+.event-date {
+  flex: none; width: 58px; text-align: center; border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--border); padding: .45rem 0; height: fit-content;
+}
+.event-day { display: block; font-size: 1.35rem; font-weight: 700; line-height: 1.1; }
+.event-mon { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.event-main { min-width: 0; }
+.event-title { margin: 0 0 .2rem; font-size: 1.05rem; }
+.event-when { margin: 0; color: var(--muted); font-size: .85rem; }
+.event-where { margin: .15rem 0 0; color: var(--muted); font-size: .85rem; }
+.event-summary { margin-top: .6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-summary img, .event-summary video { border-radius: 10px; margin: .6rem 0; display: block; max-width: 100%; }
+@media (max-width: 600px) { .event { flex-direction: column; gap: .7rem; } }
+
 /* ---- pager ---- */
 .pager {
   display: flex; align-items: center; justify-content: center; gap: 1rem;

@@ -13,6 +13,16 @@
     .filter(function (r, i, all) { return /^wss?:\/\/.+/i.test(r) && all.indexOf(r) === i; });
 
   var PER_PAGE = Math.max(1, parseInt(CFG.perPage, 10) || 20);
+
+  /* Optional pages, all on unless config.js says otherwise. */
+  var PAGES = {};
+  ["topics", "gallery", "calendar", "about"].forEach(function (k) {
+    var v = (CFG.pages || {})[k];
+    PAGES[k] = v === undefined ? true : !!v;
+  });
+
+  /* Calendar events are only worth asking the relays for if the page is on. */
+  var KINDS = PAGES.calendar ? [0, 1, 31922, 31923] : [0, 1];
   var CACHE_KEY = "nbn-events-v1";   // scoped per account below, so switching keys never shows stale posts
   var TIMEOUT_MS = 9000;
 
@@ -182,6 +192,68 @@
     return set;
   }
 
+  var IMG_RE = /https?:\/\/[^\s<>"']+?\.(?:jpe?g|png|gif|webp|avif)(?:\?[^\s<>"']*)?/gi;
+
+  function imagesOf(ev) {
+    var urls = [];
+    function add(u) {
+      u = String(u).replace(/[.,;:!?)\]]+$/, "").trim();
+      if (/^https?:\/\//i.test(u) && urls.indexOf(u) === -1) urls.push(u);
+    }
+    // NIP-92 media metadata is more reliable than scraping the body, so try it first.
+    (ev.tags || []).forEach(function (t) {
+      if (t[0] !== "imeta") return;
+      t.slice(1).forEach(function (part) {
+        var m = /^url\s+(\S+)/.exec(String(part));
+        if (m && /\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(m[1])) add(m[1]);
+      });
+    });
+    var found = String(ev.content || "").match(IMG_RE);
+    if (found) found.forEach(add);
+    return urls;
+  }
+
+  function galleryItems() {
+    var out = [];
+    notes().forEach(function (ev) {
+      imagesOf(ev).forEach(function (url) { out.push({ url: url, ev: ev }); });
+    });
+    return out;
+  }
+
+  function tagValue(ev, name) {
+    var hit = (ev.tags || []).find(function (t) { return t[0] === name && t[1]; });
+    return hit ? String(hit[1]) : "";
+  }
+
+  /* NIP-52: 31922 is an all-day event keyed by date, 31923 by unix timestamp. */
+  function calendarEvents() {
+    var out = [];
+    events.forEach(function (ev) {
+      if (ev.kind !== 31922 && ev.kind !== 31923) return;
+      var allDay = ev.kind === 31922;
+      var raw = tagValue(ev, "start");
+      if (!raw) return;
+      var start = allDay ? Date.parse(raw + "T00:00:00") / 1000 : parseInt(raw, 10);
+      if (!start || isNaN(start)) return;
+      var endRaw = tagValue(ev, "end");
+      var end = endRaw ? (allDay ? Date.parse(endRaw + "T00:00:00") / 1000 : parseInt(endRaw, 10)) : 0;
+      out.push({
+        ev: ev, start: start, end: end || 0, allDay: allDay,
+        title: tagValue(ev, "title") || tagValue(ev, "name") || "Untitled event",
+        location: tagValue(ev, "location"),
+        image: tagValue(ev, "image"),
+        summary: tagValue(ev, "summary") || String(ev.content || "")
+      });
+    });
+    var now = Date.now() / 1000;
+    var upcoming = out.filter(function (e) { return (e.end || e.start) >= now; })
+                      .sort(function (a, b) { return a.start - b.start; });
+    var past = out.filter(function (e) { return (e.end || e.start) < now; })
+                  .sort(function (a, b) { return b.start - a.start; });
+    return { upcoming: upcoming, past: past, all: upcoming.concat(past) };
+  }
+
   // ---------- content rendering ----------
   var TOKEN = /(https?:\/\/[^\s<]+)|(?:nostr:)?((?:npub|note|nevent|nprofile|naddr)1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,})|(^|\s)#([\p{L}\p{N}_-]{2,30})/gu;
 
@@ -240,6 +312,32 @@
     return html;
   }
 
+  function galleryTile(item) {
+    var nid = bech32Encode("note", item.ev.id);
+    return '<a class="shot" href="#/note/' + nid + '" title="' + esc(fmtDate(item.ev.created_at)) + '">' +
+           '<img src="' + esc(item.url) + '" alt="" loading="lazy">' +
+           '<span class="shot-date">' + esc(fmtDate(item.ev.created_at)) + '</span></a>';
+  }
+
+  function eventCard(e) {
+    var d = new Date(e.start * 1000);
+    var nid = bech32Encode("note", e.ev.id);
+    var when = e.allDay
+      ? fmtDate(e.start)
+      : fmtDate(e.start) + " · " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+    var html = '<article class="event' + ((e.end || e.start) < Date.now() / 1000 ? " is-past" : "") + '">';
+    html += '<div class="event-date"><span class="event-day">' + d.getDate() + '</span>' +
+            '<span class="event-mon">' + d.toLocaleDateString("en-GB", { month: "short" }) + '</span></div>';
+    html += '<div class="event-main"><h3 class="event-title">' + esc(e.title) + '</h3>';
+    html += '<p class="event-when">' + esc(when) + '</p>';
+    if (e.location) html += '<p class="event-where">' + esc(e.location) + '</p>';
+    if (e.summary) html += '<div class="event-summary">' + renderContent(e.summary) + '</div>';
+    html += '<div class="note-foot"><a class="permalink" href="https://njump.me/' + nid +
+            '" target="_blank" rel="noopener noreferrer">View on Nostr ↗</a></div>';
+    return html + '</div></article>';
+  }
+
   function pageNum(s) {
     return Math.max(1, parseInt(s, 10) || 1);
   }
@@ -257,15 +355,18 @@
     return html + '</nav>';
   }
 
-  /* Every list of posts renders the same way: a grid of cards plus a pager. */
-  function postList(items, base, want, emptyMsg) {
+  /* Every listing renders the same way: a grid of cards plus a pager. */
+  function pagedList(items, base, want, emptyMsg, cls, card) {
     if (!items.length) return '<p class="empty">' + emptyMsg + '</p>';
     var pages = Math.max(1, Math.ceil(items.length / PER_PAGE));
-    // Posts keep arriving, so a bookmarked page number can outrun the list.
+    // Content keeps arriving, so a bookmarked page number can outrun the list.
     var page = Math.min(want || 1, pages);
     var slice = items.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-    return '<div class="feed-grid">' + slice.map(function (e) { return noteCard(e); }).join("") +
-           '</div>' + pager(base, page, pages);
+    return '<div class="' + cls + '">' + slice.map(card).join("") + '</div>' + pager(base, page, pages);
+  }
+
+  function postList(items, base, want, emptyMsg) {
+    return pagedList(items, base, want, emptyMsg, "feed-grid", function (e) { return noteCard(e); });
   }
 
   // ---------- routing ----------
@@ -277,13 +378,40 @@
     }
     if (parts[0] === "note" && parts[1]) return { name: "note", id: parts[1] };
     if (parts[0] === "page" && parts[1]) return { name: "home", page: pageNum(parts[1]) };
+    if (parts[0] === "gallery") return { name: "gallery", page: pageNum(parts[1]) };
+    if (parts[0] === "calendar") return { name: "calendar", page: pageNum(parts[1]) };
     if (parts[0] === "tags") return { name: "tags" };
     if (parts[0] === "about") return { name: "about" };
     return { name: "home", page: 1 };
   }
 
+  /* Which setting governs each route; the feed is never switchable. */
+  var PAGE_OF = { tags: "topics", tag: "topics", gallery: "gallery", calendar: "calendar", about: "about" };
+
+  function activeRoute() {
+    var r = route();
+    var key = PAGE_OF[r.name];
+    return key && !PAGES[key] ? { name: "home", page: 1 } : r;
+  }
+
+  var TABS = [
+    { key: "", href: "#/", label: "Posts", route: "home" },
+    { key: "topics", href: "#/tags", label: "Topics", route: "tags" },
+    { key: "gallery", href: "#/gallery", label: "Gallery", route: "gallery" },
+    { key: "calendar", href: "#/calendar", label: "Events", route: "calendar" },
+    { key: "about", href: "#/about", label: "About", route: "about" }
+  ];
+
+  function buildTabs() {
+    $("tabs").innerHTML = TABS.filter(function (t) { return !t.key || PAGES[t.key]; })
+      .map(function (t) {
+        return '<a href="' + t.href + '" class="tab" data-route="' + t.route + '">' + t.label + '</a>';
+      }).join("");
+  }
+
   function setActiveTab(name) {
-    var map = { home: "home", tag: "tags", tags: "tags", about: "about", note: "home" };
+    var map = { home: "home", tag: "tags", tags: "tags", gallery: "gallery",
+                calendar: "calendar", about: "about", note: "home" };
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (a) {
       a.classList.toggle("is-active", a.dataset.route === map[name]);
     });
@@ -291,7 +419,7 @@
 
   function render() {
     renderQueued = false;
-    var r = route();
+    var r = activeRoute();
     var content = $("content");
     var list = notes();
     setActiveTab(r.name);
@@ -333,6 +461,17 @@
       html += '<h2 class="section-title">Posts tagged #' + esc(r.tag) + ' <span class="count">(' + hits.length + ')</span></h2>';
       html += postList(hits, "#/tag/" + encodeURIComponent(r.tag) + "/", r.page,
                        "Nothing tagged #" + esc(r.tag) + ".");
+    } else if (r.name === "gallery") {
+      var shots = galleryItems();
+      html += '<h2 class="section-title">Gallery <span class="count">(' + shots.length + ')</span></h2>';
+      html += pagedList(shots, "#/gallery/", r.page,
+                        "No images in the posts yet.", "gallery-grid", galleryTile);
+    } else if (r.name === "calendar") {
+      var cal = calendarEvents();
+      html += '<h2 class="section-title">Events <span class="count">(' +
+              cal.upcoming.length + ' upcoming)</span></h2>';
+      html += pagedList(cal.all, "#/calendar/", r.page,
+                        "No calendar events published yet.", "event-list", eventCard);
     } else if (r.name === "about") {
       html += '<h2 class="section-title">About</h2><div class="about-card">';
       html += '<p>' + esc((profile && profile.about) || "Grassroots Bitcoin community in Northamptonshire, England.") + '</p><dl>';
@@ -346,7 +485,8 @@
       var shown = roots.length ? roots : list;
       html += postList(shown, "#/page/", r.page, "No posts loaded yet.");
     }
-    $("main").classList.toggle("is-wide", r.name === "home" || r.name === "tag");
+    $("main").classList.toggle("is-wide",
+      r.name === "home" || r.name === "tag" || r.name === "gallery");
     content.innerHTML = html;
 
     // Only jump to the top on a real navigation, not when relays deliver more posts.
@@ -376,7 +516,7 @@
       try { ws = new WebSocket(url); } catch (e) { return finish("blocked"); }
 
       ws.onopen = function () {
-        ws.send(JSON.stringify(["REQ", "nbn", { authors: [PUBKEY], kinds: [0, 1], limit: 500 }]));
+        ws.send(JSON.stringify(["REQ", "nbn", { authors: [PUBKEY], kinds: KINDS, limit: 500 }]));
       };
       ws.onerror = function () { finish("offline"); };
       ws.onclose = function () { finish("ok"); };
@@ -414,6 +554,7 @@
     return;
   }
 
+  buildTabs();
   window.addEventListener("hashchange", render);
 
   loadCache();
