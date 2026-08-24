@@ -42,6 +42,7 @@ var SITE_CONFIG = {
     "wss://nos.lol",
     "wss://relay.damus.io",
     "wss://relay.primal.net",
+    "wss://nostr.mom",
     "wss://relay.nostr.band",
     "wss://nostr.wine",
     "wss://purplepag.es",
