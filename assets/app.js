@@ -23,13 +23,15 @@
 
   /* Optional pages, all on unless config.js says otherwise. */
   var PAGES = {};
-  ["topics", "gallery", "calendar", "about"].forEach(function (k) {
+  ["topics", "gallery", "calendar", "articles", "mentions", "about"].forEach(function (k) {
     var v = (CFG.pages || {})[k];
     PAGES[k] = v === undefined ? true : !!v;
   });
 
-  /* Calendar events are only worth asking the relays for if the page is on. */
-  var KINDS = PAGES.calendar ? [0, 1, 31922, 31923] : [0, 1];
+  /* The extra kinds are only worth asking the relays for if their page is on. */
+  var KINDS = [0, 1];
+  if (PAGES.calendar) KINDS = KINDS.concat([31922, 31923]);
+  if (PAGES.articles) KINDS = KINDS.concat([30023]);
   var CACHE_KEY = "nbn-events-v1";   // scoped per account below, so switching keys never shows stale posts
   var TIMEOUT_MS = 9000;
 
@@ -110,6 +112,44 @@
     if (r.hrp !== "npub") throw new Error("expected an npub, got '" + r.hrp + "'");
     if (r.bytes.length !== 32) throw new Error("wrong key length");
     return toHex(r.bytes);
+  }
+
+  /* note1 is the bare event id; nevent1 wraps it in TLV records, type 0 being the id. */
+  function quoteKey(id) {
+    try {
+      var r = bech32Parse(id);
+      if (r.hrp === "note") return r.bytes.length === 32 ? toHex(r.bytes) : "";
+      if (r.hrp !== "nevent") return "";
+      var b = r.bytes, i = 0;
+      while (i + 2 <= b.length) {
+        var type = b[i], len = b[i + 1];
+        if (type === 0 && len === 32) return toHex(b.slice(i + 2, i + 34));
+        i += 2 + len;
+      }
+    } catch (err) { /* not a valid identifier — leave the text alone */ }
+    return "";
+  }
+
+  /* An nevent also carries relay hints (TLV type 1): the relays the author
+     saw the quoted event on. Without them a quote that lives nowhere in
+     config.js can never be found. */
+  function quoteHints(id) {
+    var out = [];
+    try {
+      var r = bech32Parse(id);
+      if (r.hrp !== "nevent") return out;
+      var b = r.bytes, i = 0;
+      while (i + 2 <= b.length) {
+        var type = b[i], len = b[i + 1];
+        if (type === 1 && len) {
+          var url = "";
+          for (var j = i + 2; j < i + 2 + len && j < b.length; ++j) url += String.fromCharCode(b[j]);
+          if (/^wss?:\/\/.+/i.test(url)) out.push(url.trim());
+        }
+        i += 2 + len;
+      }
+    } catch (err) { /* not a valid identifier — no hints to take */ }
+    return out;
   }
 
   /* npub is the bare key; nprofile wraps it in TLV records, type 0 being the key. */
@@ -235,11 +275,71 @@
         try { localStorage.setItem(NAME_KEY, JSON.stringify(names)); } catch (e) { /* blocked */ }
         queueRender();
         nameHooks.forEach(function (fn) { fn(); });
+        refreshModal();
       };
       ws.onclose = function () {
         clearTimeout(timer);
         // Anything still unnamed after every relay has spoken keeps its short form.
         if (!found) want.forEach(function (pk) { if (names[pk] === undefined) names[pk] = ""; });
+      };
+    });
+  }
+
+  function personName(pk) {
+    return names[pk] ? "@" + names[pk] : bech32Encode("npub", pk).slice(0, 12) + "\u2026";
+  }
+
+  /* ---- quoted notes ----
+     A note1/nevent1 in a post is shown inline. The event is usually somebody
+     else's, so it is fetched on its own and kept out of the feed's store. */
+  var quotes = {};
+  var quoteWanted = {};
+  var quoteHosts = [];   // relay hints picked up from the nevents themselves
+  var quoteTimer = null;
+
+  function quoteOf(id) {
+    return events.get(id) || quotes[id] || null;
+  }
+
+  function needQuote(id, bech) {
+    if (!id || quoteOf(id) || quoteWanted[id]) return;
+    quoteWanted[id] = true;
+    quoteHints(bech || "").forEach(function (url) {
+      if (RELAYS.indexOf(url) === -1 && quoteHosts.indexOf(url) === -1) quoteHosts.push(url);
+    });
+    clearTimeout(quoteTimer);
+    quoteTimer = setTimeout(fetchQuotes, 250);
+  }
+
+  function fetchQuotes() {
+    var want = Object.keys(quoteWanted).filter(function (id) { return !quoteOf(id); });
+    var where = RELAYS.concat(quoteHosts);
+    if (!want.length || !where.length) return;
+
+    where.forEach(function (url) {
+      var ws;
+      try { ws = new WebSocket(url); } catch (e) { return; }
+      var timer = setTimeout(shut, TIMEOUT_MS);
+
+      function shut() {
+        clearTimeout(timer);
+        try { ws.close(); } catch (e) { /* already closed */ }
+      }
+
+      ws.onopen = function () {
+        ws.send(JSON.stringify(["REQ", "quotes", { ids: want, limit: want.length }]));
+      };
+      ws.onerror = shut;
+      ws.onclose = function () { clearTimeout(timer); };
+      ws.onmessage = function (msg) {
+        var data;
+        try { data = JSON.parse(msg.data); } catch (e) { return; }
+        if (data[0] === "EOSE") return shut();
+        if (data[0] !== "EVENT" || !data[2] || !data[2].id || quotes[data[2].id]) return;
+        quotes[data[2].id] = data[2];
+        needName(data[2].pubkey);
+        queueRender();
+        refreshModal();
       };
     });
   }
@@ -257,7 +357,18 @@
 
   function notes() {
     var out = [];
-    events.forEach(function (e) { if (e.kind === 1) out.push(e); });
+    events.forEach(function (e) { if (e.kind === 1 && e.pubkey === PUBKEY) out.push(e); });
+    return out.sort(function (a, b) { return b.created_at - a.created_at; });
+  }
+
+  /* Posts by other people that tag this account. */
+  function mentions() {
+    var out = [];
+    events.forEach(function (e) {
+      if (e.kind !== 1 || e.pubkey === PUBKEY) return;
+      var hit = (e.tags || []).some(function (t) { return t[0] === "p" && t[1] === PUBKEY; });
+      if (hit) out.push(e);
+    });
     return out.sort(function (a, b) { return b.created_at - a.created_at; });
   }
 
@@ -347,11 +458,14 @@
   // ---------- content rendering ----------
   var TOKEN = /(https?:\/\/[^\s<]+)|(?:nostr:)?((?:npub|note|nevent|nprofile|naddr)1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,})|(^|\s)#([\p{L}\p{N}_-]{2,30})/gu;
 
-  function renderContent(text) {
+  function renderContent(text, depth) {
+    depth = depth || 0;
     var src = String(text || "");
     var out = "", last = 0, m;
-    TOKEN.lastIndex = 0;
-    while ((m = TOKEN.exec(src)) !== null) {
+    // A fresh regex each call: a quoted note renders through here recursively,
+    // and a shared lastIndex would restart the outer scan forever.
+    var token = new RegExp(TOKEN.source, TOKEN.flags);
+    while ((m = token.exec(src)) !== null) {
       out += esc(src.slice(last, m.index));
       last = m.index + m[0].length;
 
@@ -369,10 +483,17 @@
       } else if (m[2]) {
         var id = m[2];
         var pk = mentionKey(id);
+        var qid = pk ? "" : quoteKey(id);
         if (pk) needName(pk);
-        var label = pk && names[pk] ? "@" + esc(names[pk]) : esc(id.slice(0, 12)) + "…";
-        out += '<a class="mention" href="https://njump.me/' + esc(id) +
-               '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+        // Only one level deep: a quote inside a quote stays a plain link.
+        if (qid && depth < 1) {
+          needQuote(qid, id);
+          out += quoteCard(qid, id);
+        } else {
+          var label = pk && names[pk] ? "@" + esc(names[pk]) : esc(id.slice(0, 12)) + "…";
+          out += '<a class="mention" href="https://njump.me/' + esc(id) +
+                 '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+        }
       } else if (m[4]) {
         var tag = m[4];
         out += esc(m[3]) + '<a class="hashtag" href="#/tag/' + encodeURIComponent(tag.toLowerCase()) +
@@ -388,6 +509,22 @@
     return !!sel && !sel.isCollapsed && String(sel).length > 0;
   }
 
+  /* Built from spans, so it stays valid inside a paragraph of article text. */
+  function quoteCard(id, bech) {
+    var ev = quoteOf(id);
+    if (!ev) {
+      return '<a class="mention" href="https://njump.me/' + esc(bech) +
+             '" target="_blank" rel="noopener noreferrer">' + esc(bech.slice(0, 12)) + '\u2026</a>';
+    }
+    var npub = bech32Encode("npub", ev.pubkey);
+    return '<span class="quote">' +
+           '<span class="quote-head">' +
+           '<a class="note-author" href="https://njump.me/' + esc(npub) +
+           '" target="_blank" rel="noopener noreferrer">' + esc(personName(ev.pubkey)) + '</a>' +
+           '<span class="quote-date">' + esc(fmtDate(ev.created_at)) + '</span></span>' +
+           '<span class="quote-body">' + renderContent(ev.content, 1) + '</span></span>';
+  }
+
   function noteCard(ev, opts) {
     opts = opts || {};
     var tags = hashtagsOf(ev);
@@ -396,6 +533,11 @@
     var open = opts.single ? "" : ' data-note="' + esc(ev.id) + '" tabindex="0" role="button"';
     var html = '<article class="note"' + open + '>';
     html += '<div class="note-head">';
+    if (opts.author) {
+      needName(ev.pubkey);
+      html += '<a class="note-author" href="https://njump.me/' + esc(bech32Encode("npub", ev.pubkey)) +
+              '" target="_blank" rel="noopener noreferrer">' + esc(personName(ev.pubkey)) + '</a>';
+    }
     html += '<time class="note-date" datetime="' + new Date(ev.created_at * 1000).toISOString() + '">' +
             fmtDate(ev.created_at) + ' · ' + relTime(ev.created_at) + '</time>';
     if (isReply(ev)) html += '<span class="badge">Reply</span>';
@@ -415,7 +557,10 @@
 
   function galleryTile(item) {
     var nid = bech32Encode("note", item.ev.id);
-    return '<a class="shot" href="#/note/' + nid + '" title="' + esc(fmtDate(item.ev.created_at)) + '">' +
+    // A real link, so it can still be copied or opened in a tab, but a click
+    // opens the overlay with its arrows instead of leaving the gallery.
+    return '<a class="shot" href="#/note/' + nid + '" data-note="' + esc(item.ev.id) +
+           '" title="' + esc(fmtDate(item.ev.created_at)) + '">' +
            '<img src="' + esc(item.url) + '" alt="" loading="lazy">' +
            '<span class="shot-date">' + esc(fmtDate(item.ev.created_at)) + '</span></a>';
   }
@@ -671,7 +816,7 @@
   var RSVP_LABEL = { accepted: "Going", tentative: "Maybe", declined: "Not going" };
 
   function rsvpName(pk) {
-    return names[pk] ? "@" + names[pk] : bech32Encode("npub", pk).slice(0, 12) + "\u2026";
+    return personName(pk);
   }
 
   function rsvpHtml(coord) {
@@ -733,6 +878,7 @@
   }
 
   function openDay(key) {
+    reopenModal = function () { openDay(key); };
     var parts = key.split("-");
     var y = +parts[0], mo = +parts[1], da = +parts[2];
     var list = calendarEvents().all.filter(function (e) {
@@ -773,6 +919,15 @@
     $("modal-panel").scrollTop = 0;
   }
 
+  var reopenModal = null;   // redraws the popup in place as late data arrives
+
+  function refreshModal() {
+    if (!reopenModal || $("modal").hidden) return;
+    var top = $("modal-panel").scrollTop;
+    reopenModal();
+    $("modal-panel").scrollTop = top;
+  }
+
   function showModal(html) {
     $("modal-body").innerHTML = html;
     $("modal").hidden = false;
@@ -780,6 +935,7 @@
   }
 
   function openEvent(id) {
+    reopenModal = function () { openEvent(id); };
     var hit = null;
     calendarEvents().all.forEach(function (e) { if (e.ev.id === id) hit = e; });
     if (!hit) return;
@@ -791,6 +947,7 @@
   }
 
   function openNote(id) {
+    reopenModal = function () { openNote(id); };
     var ev = events.get(id);
     if (!ev) return;
     var list = keysIn("[data-note]");
@@ -800,6 +957,7 @@
 
   function closeModal() {
     modalNav = null;
+    reopenModal = null;
     nameHooks.length = 0;
     $("modal").hidden = true;
     $("modal-body").innerHTML = "";
@@ -837,6 +995,147 @@
     return pagedList(items, base, want, emptyMsg, "feed-grid", function (e) { return noteCard(e); });
   }
 
+
+  // ---------- long-form articles (NIP-23, kind 30023) ----------
+  function articles() {
+    var out = [];
+    events.forEach(function (ev) {
+      if (ev.kind !== 30023) return;
+      var at = parseInt(tagValue(ev, "published_at"), 10) || ev.created_at;
+      out.push({
+        ev: ev, at: at,
+        title: tagValue(ev, "title") || "Untitled",
+        summary: tagValue(ev, "summary"),
+        image: tagValue(ev, "image") || imagesOf(ev)[0] || ""
+      });
+    });
+    return out.sort(function (a, b) { return b.at - a.at; });
+  }
+
+  /* A small Markdown renderer — enough for what long-form posts actually use.
+     Everything runs through the shared escaping, so no author markup reaches
+     the page; finished fragments are parked under a marker while it works. */
+  var MARK = "\uE000";   // a private-use marker, never present in real text
+
+  function mdInline(text) {
+    var held = [];
+    function hold(html) { return MARK + (held.push(html) - 1) + MARK; }
+
+    var src = String(text);
+    src = src.replace(/`([^`]+)`/g, function (_, code) { return hold("<code>" + esc(code) + "</code>"); });
+    src = src.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, function (_, alt, url) {
+      return /^https?:\/\//i.test(url)
+        ? hold('<img src="' + esc(url) + '" alt="' + esc(alt) + '" loading="lazy">')
+        : "";
+    });
+    src = src.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, function (whole, label, url) {
+      if (!/^(https?:\/\/|#|mailto:)/i.test(url)) return whole;
+      return hold('<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(label) + '</a>');
+    });
+
+    // Bare URLs, mentions and hashtags all come from the shared renderer.
+    var out = renderContent(src);
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    out = out.replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>");
+    return out.replace(new RegExp(MARK + "(\\d+)" + MARK, "g"), function (_, i) { return held[+i]; });
+  }
+
+  function renderMarkdown(text) {
+    var lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    var html = "", para = [], list = null, fence = null;
+
+    function flushPara() {
+      if (!para.length) return;
+      html += "<p>" + mdInline(para.join("\n")) + "</p>";
+      para = [];
+    }
+    function flushList() {
+      if (!list) return;
+      html += "<" + list.tag + ">" + list.items.map(function (t) {
+        return "<li>" + mdInline(t) + "</li>";
+      }).join("") + "</" + list.tag + ">";
+      list = null;
+    }
+    function flush() { flushPara(); flushList(); }
+
+    lines.forEach(function (line) {
+      if (fence !== null) {
+        if (/^\s*```/.test(line)) {
+          html += "<pre><code>" + esc(fence.join("\n")) + "</code></pre>";
+          fence = null;
+        } else fence.push(line);
+        return;
+      }
+      if (/^\s*```/.test(line)) { flush(); fence = []; return; }
+      if (!line.trim()) { flush(); return; }
+
+      var h = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (h) {
+        flush();
+        var n = Math.min(h[1].length + 1, 6);   // the page title is the h1
+        html += "<h" + n + ">" + mdInline(h[2]) + "</h" + n + ">";
+        return;
+      }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); html += "<hr>"; return; }
+
+      var q = /^\s*>\s?(.*)$/.exec(line);
+      if (q) { flush(); html += "<blockquote>" + mdInline(q[1]) + "</blockquote>"; return; }
+
+      var b = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var o = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (b || o) {
+        var tag = b ? "ul" : "ol";
+        flushPara();
+        if (list && list.tag !== tag) flushList();
+        list = list || { tag: tag, items: [] };
+        list.items.push((b || o)[1]);
+        return;
+      }
+
+      flushList();
+      para.push(line);
+    });
+
+    if (fence !== null) html += "<pre><code>" + esc(fence.join("\n")) + "</code></pre>";
+    flush();
+    return html;
+  }
+
+  function articleCard(a) {
+    var html = '<a class="article" href="#/article/' + esc(a.ev.id) + '">';
+    if (a.image) html += '<img class="article-img" src="' + esc(a.image) + '" alt="" loading="lazy">';
+    html += '<div class="article-text">';
+    html += '<time class="article-date" datetime="' + new Date(a.at * 1000).toISOString() + '">' +
+            fmtDate(a.at) + '</time>';
+    html += '<h3 class="article-title">' + esc(a.title) + '</h3>';
+    if (a.summary) html += '<p class="article-summary">' + esc(a.summary) + '</p>';
+    return html + '</div></a>';
+  }
+
+  function articlePage(id) {
+    var hit = null;
+    articles().forEach(function (a) { if (a.ev.id === id) hit = a; });
+    if (!hit) {
+      return '<a class="backlink" href="#/articles">← All articles</a>' +
+             '<p class="empty">That article has not loaded yet. It may still be arriving from the relays.</p>';
+    }
+    var tags = hashtagsOf(hit.ev);
+    var html = '<a class="backlink" href="#/articles">← All articles</a>';
+    html += '<article class="longform">';
+    html += '<h1 class="longform-title">' + esc(hit.title) + '</h1>';
+    html += '<p class="longform-date">' + esc(fmtDate(hit.at)) + '</p>';
+    if (hit.summary) html += '<p class="longform-summary">' + esc(hit.summary) + '</p>';
+    if (hit.image) html += '<img class="longform-img" src="' + esc(hit.image) + '" alt="">';
+    html += '<div class="longform-body">' + renderMarkdown(hit.ev.content) + '</div>';
+    if (tags.length) {
+      html += '<div class="note-foot">' + tags.map(function (t) {
+        return '<a class="hashtag" href="#/tag/' + encodeURIComponent(t) + '">#' + esc(t) + '</a>';
+      }).join("") + '</div>';
+    }
+    return html + '</article>';
+  }
+
   // ---------- routing ----------
   function route() {
     var h = (location.hash || "#/").replace(/^#/, "");
@@ -845,6 +1144,9 @@
       return { name: "tag", tag: decodeURIComponent(parts[1]), page: pageNum(parts[2]) };
     }
     if (parts[0] === "note" && parts[1]) return { name: "note", id: parts[1] };
+    if (parts[0] === "article" && parts[1]) return { name: "article", id: parts[1] };
+    if (parts[0] === "articles") return { name: "articles", page: pageNum(parts[1]) };
+    if (parts[0] === "mentions") return { name: "mentions", page: pageNum(parts[1]) };
     if (parts[0] === "page" && parts[1]) return { name: "home", page: pageNum(parts[1]) };
     if (parts[0] === "gallery") return { name: "gallery", page: pageNum(parts[1]) };
     if (parts[0] === "calendar") return { name: "calendar", page: pageNum(parts[1]) };
@@ -854,7 +1156,9 @@
   }
 
   /* Which setting governs each route; the feed is never switchable. */
-  var PAGE_OF = { tags: "topics", tag: "topics", gallery: "gallery", calendar: "calendar", about: "about" };
+  var PAGE_OF = { tags: "topics", tag: "topics", gallery: "gallery", calendar: "calendar",
+                  articles: "articles", article: "articles", mentions: "mentions",
+                  about: "about" };
 
   function activeRoute() {
     var r = route();
@@ -867,6 +1171,8 @@
     { key: "topics", href: "#/tags", label: "Topics", route: "tags" },
     { key: "gallery", href: "#/gallery", label: "Gallery", route: "gallery" },
     { key: "calendar", href: "#/calendar", label: "Events", route: "calendar" },
+    { key: "articles", href: "#/articles", label: "Articles", route: "articles" },
+    { key: "mentions", href: "#/mentions", label: "Mentions", route: "mentions" },
     { key: "about", href: "#/about", label: "About", route: "about" }
   ];
 
@@ -885,7 +1191,8 @@
 
   function setActiveTab(name) {
     var map = { home: "home", tag: "tags", tags: "tags", gallery: "gallery",
-                calendar: "calendar", about: "about", note: "home" };
+                calendar: "calendar", articles: "articles", article: "articles",
+                mentions: "mentions", about: "about", note: "home" };
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (a) {
       a.classList.toggle("is-active", a.dataset.route === map[name]);
     });
@@ -920,6 +1227,20 @@
       html += '<a class="backlink" href="#/">← All posts</a>';
       html += found ? noteCard(found, { single: true })
                     : '<p class="empty">That post hasn\'t loaded yet. It may still be arriving from the relays.</p>';
+    } else if (r.name === "article") {
+      html += articlePage(r.id);
+    } else if (r.name === "articles") {
+      var arts = articles();
+      html += '<h2 class="section-title">Articles <span class="count">(' + arts.length + ')</span></h2>';
+      html += pagedList(arts, "#/articles/", r.page,
+                        "No articles published yet.", "article-list", articleCard);
+    } else if (r.name === "mentions") {
+      var said = mentions();
+      html += '<h2 class="section-title">Mentions <span class="count">(' + said.length + ')</span></h2>';
+      html += pagedList(said, "#/mentions/", r.page,
+                        "Nobody has mentioned this account yet.", "feed-grid", function (e) {
+                          return noteCard(e, { author: true });
+                        });
     } else if (r.name === "tags") {
       var counts = {};
       list.forEach(function (e) { hashtagsOf(e).forEach(function (t) { counts[t] = (counts[t] || 0) + 1; }); });
@@ -987,14 +1308,30 @@
       var shown = roots.length ? roots : list;
       html += postList(shown, "#/page/", r.page, "No posts loaded yet.");
     }
-    $("main").classList.toggle("is-wide",
-      r.name === "home" || r.name === "tag" || r.name === "gallery" || r.name === "calendar");
+    // Anything laid out as a grid of cards gets the wide column.
+    var WIDE = ["home", "tag", "gallery", "calendar", "mentions"];
+    $("main").classList.toggle("is-wide", WIDE.indexOf(r.name) !== -1);
     content.innerHTML = html;
+    trimCards();
 
     // Only jump to the top on a real navigation, not when relays deliver more posts.
     var key = r.name + ":" + (r.page || "") + (r.tag || "") + (r.id || "");
     if (key !== lastViewKey) { lastViewKey = key; window.scrollTo(0, 0); }
 
+  }
+
+  /* Cards are a fixed height, so a body that overflows is cut back to a whole
+     number of lines — never through the middle of one. */
+  function trimCards() {
+    var bodies = document.querySelectorAll(".feed-grid .note-body");
+    Array.prototype.forEach.call(bodies, function (el) {
+      el.style.maxHeight = "";
+      var lh = parseFloat(window.getComputedStyle(el).lineHeight);
+      if (!lh || !el.clientHeight) return;
+      if (el.scrollHeight <= el.clientHeight + 1) return;
+      var lines = Math.max(1, Math.floor(el.clientHeight / lh));
+      el.style.maxHeight = (lines * lh) + "px";
+    });
   }
 
   function queueRender() {
@@ -1018,8 +1355,14 @@
       var timer = setTimeout(function () { finish("ok"); }, TIMEOUT_MS);
       try { ws = new WebSocket(url); } catch (e) { return finish("blocked"); }
 
+      // Mentions are a second subscription: they are by other people, not this account.
+      var subs = PAGES.mentions ? 2 : 1;
+
       ws.onopen = function () {
         ws.send(JSON.stringify(["REQ", "nbn", { authors: [PUBKEY], kinds: KINDS, limit: 500 }]));
+        if (PAGES.mentions) {
+          ws.send(JSON.stringify(["REQ", "mentions", { "#p": [PUBKEY], kinds: [1], limit: 200 }]));
+        }
       };
       ws.onerror = function () { finish("offline"); };
       ws.onclose = function () { finish("ok"); };
@@ -1034,7 +1377,7 @@
             queueRender();
           }
         } else if (data[0] === "EOSE") {
-          finish("ok");
+          if (--subs <= 0) finish("ok");
         }
       };
     });
@@ -1068,9 +1411,12 @@
     var day = ev.target.closest("[data-day]");
     if (day) { ev.preventDefault(); openDay(day.dataset.day); }
 
-    // Links, media controls and text selection keep their own behaviour.
+    // Links, media controls and text selection keep their own behaviour, unless
+    // the card itself is the link.
     var card = ev.target.closest("[data-note], [data-event]");
-    if (card && !ev.target.closest("a, button, video, audio, iframe") && !hasSelection()) {
+    var inner = ev.target.closest("a, button, video, audio, iframe");
+    if (card && (!inner || inner === card) && !hasSelection()) {
+      ev.preventDefault();
       if (card.dataset.note) openNote(card.dataset.note);
       else openEvent(card.dataset.event);
     }
