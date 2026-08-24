@@ -1,0 +1,14 @@
+{
+  "name": "Northants Bitcoin Network",
+  "short_name": "NorthantsBTC",
+  "description": "Grassroots #Bitcoin community in the Northamptonshire area of England. Est 729,964",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#60202b",
+  "icons": [
+    { "src": "https://cdn.nostr.build/i/95ddaad6c4b9c39f65af30c407eda40abaa10de13ed6c998583e56423dbe97eb.jpg", "sizes": "192x192", "type": "image/jpeg" },
+    { "src": "https://cdn.nostr.build/i/95ddaad6c4b9c39f65af30c407eda40abaa10de13ed6c998583e56423dbe97eb.jpg", "sizes": "512x512", "type": "image/jpeg" }
+  ]
+}

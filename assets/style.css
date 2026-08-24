@@ -1,0 +1,126 @@
+/* Northants Bitcoin Network — brand #60202b */
+:root {
+  --brand: #60202b;
+  --brand-soft: #8a3442;
+  --accent: #f7931a;           /* bitcoin orange */
+  --bg: #fbf8f7;
+  --surface: #ffffff;
+  --border: #e6dedc;
+  --text: #1e1a1b;
+  --muted: #6d6467;
+  --radius: 14px;
+  --maxw: 720px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --brand: #b85666; --brand-soft: #d98292;
+    --bg: #14100f; --surface: #1d1817; --border: #332a29;
+    --text: #f2ecea; --muted: #a29794;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; font-family: var(--font); background: var(--bg); color: var(--text);
+  line-height: 1.6; overflow-wrap: anywhere;
+}
+a { color: var(--brand); }
+img { max-width: 100%; height: auto; }
+
+/* ---- masthead ---- */
+.masthead { background: var(--surface); border-bottom: 1px solid var(--border); }
+.banner {
+  height: 190px; background: linear-gradient(135deg, var(--brand), #2b1116);
+  background-size: cover; background-position: center;
+}
+.masthead-inner { max-width: var(--maxw); margin: 0 auto; padding: 0 20px 26px; text-align: center; }
+.avatar {
+  width: 96px; height: 96px; border-radius: 50%; object-fit: cover;
+  border: 4px solid var(--surface); background: var(--border);
+  margin-top: -48px; position: relative; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+}
+.masthead h1 { font-size: clamp(1.5rem, 4vw, 2.1rem); margin: .5rem 0 .3rem; letter-spacing: -.02em; }
+.tagline { margin: 0 auto; max-width: 34rem; color: var(--muted); }
+.ident { margin: .9rem 0 0; font-size: .82rem; display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; }
+.nip05, .npub {
+  display: inline-block; padding: .22rem .6rem; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration: none; color: var(--muted);
+}
+.nip05 { color: var(--brand); border-color: var(--brand); }
+.npub:hover { color: var(--brand); border-color: var(--brand); }
+
+/* ---- tabs ---- */
+.tabs {
+  position: sticky; top: 0; z-index: 20; display: flex; gap: .25rem; justify-content: center;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: .4rem;
+}
+.tab {
+  padding: .45rem .95rem; border-radius: 999px; text-decoration: none;
+  color: var(--muted); font-weight: 600; font-size: .92rem;
+}
+.tab:hover { color: var(--text); background: var(--bg); }
+.tab.is-active { color: #fff; background: var(--brand); }
+
+/* ---- layout ---- */
+main { max-width: var(--maxw); margin: 0 auto; padding: 22px 20px 60px; }
+.status { display: flex; align-items: center; gap: .6rem; justify-content: center; color: var(--muted); padding: 2.5rem 1rem; }
+.spinner {
+  width: 17px; height: 17px; border: 2.5px solid var(--border);
+  border-bottom-color: var(--brand); border-radius: 50%;
+  display: inline-block; animation: spin .9s linear infinite; flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+
+/* ---- note cards ---- */
+.note {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px 20px; margin-bottom: 16px;
+}
+.note-head { display: flex; align-items: baseline; gap: .6rem; margin-bottom: .55rem; flex-wrap: wrap; }
+.note-date { color: var(--muted); font-size: .82rem; }
+.badge {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+  padding: .12rem .45rem; border-radius: 5px; background: var(--bg);
+  border: 1px solid var(--border); color: var(--muted);
+}
+.note-body { white-space: pre-wrap; }
+.note-body img, .note-body video {
+  border-radius: 10px; margin: .7rem 0; display: block; border: 1px solid var(--border);
+}
+.note-foot { margin-top: .8rem; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.permalink { font-size: .8rem; color: var(--muted); text-decoration: none; }
+.permalink:hover { color: var(--brand); text-decoration: underline; }
+.hashtag { text-decoration: none; font-weight: 600; }
+.hashtag:hover { text-decoration: underline; }
+.mention {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0 .3rem; font-size: .9em; text-decoration: none;
+}
+
+/* ---- tag list ---- */
+.tag-cloud { display: flex; flex-wrap: wrap; gap: .55rem; }
+.tag-chip {
+  text-decoration: none; padding: .4rem .85rem; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-weight: 600;
+}
+.tag-chip:hover { border-color: var(--brand); color: var(--brand); }
+.tag-chip .count { color: var(--muted); font-weight: 400; margin-left: .35rem; font-size: .85em; }
+
+.section-title { font-size: 1.05rem; margin: 0 0 1rem; }
+.backlink { display: inline-block; margin-bottom: 1rem; text-decoration: none; font-weight: 600; font-size: .9rem; }
+.empty { text-align: center; color: var(--muted); padding: 3rem 1rem; }
+.about-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.about-card dt { font-weight: 700; margin-top: .9rem; font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.about-card dd { margin: .2rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86rem; }
+
+/* ---- footer ---- */
+.footer {
+  max-width: var(--maxw); margin: 0 auto; padding: 26px 20px 44px;
+  border-top: 1px solid var(--border); color: var(--muted); font-size: .84rem; text-align: center;
+}
+.footer p { margin: .3rem 0; }
+.relaystat { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }

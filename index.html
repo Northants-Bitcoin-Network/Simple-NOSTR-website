@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northants Bitcoin Network</title>
+<meta name="description" content="Grassroots #Bitcoin community in the Northamptonshire area of England. Est 729,964">
+<meta name="theme-color" content="#60202b">
+<meta property="og:title" content="Northants Bitcoin Network">
+<meta property="og:description" content="Grassroots #Bitcoin community in the Northamptonshire area of England. Est 729,964">
+<meta property="og:image" content="https://cdn.nostr.build/i/95ddaad6c4b9c39f65af30c407eda40abaa10de13ed6c998583e56423dbe97eb.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" href="https://cdn.nostr.build/i/95ddaad6c4b9c39f65af30c407eda40abaa10de13ed6c998583e56423dbe97eb.jpg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="banner" id="banner"></div>
+  <div class="masthead-inner">
+    <img class="avatar" id="avatar" alt="" width="96" height="96">
+    <h1 id="site-title">Northants Bitcoin Network</h1>
+    <p class="tagline" id="site-about">Grassroots #Bitcoin community in the Northamptonshire area of England. Est 729,964</p>
+    <p class="ident">
+      <span id="nip05" class="nip05" hidden></span>
+      <a id="npub-link" class="npub" href="#" title="Copy npub">npub…</a>
+    </p>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs" aria-label="Sections">
+  <a href="#/" class="tab" data-route="home">Posts</a>
+  <a href="#/tags" class="tab" data-route="tags">Topics</a>
+  <a href="#/about" class="tab" data-route="about">About</a>
+</nav>
+
+<main id="main">
+  <div id="status" class="status" role="status" aria-live="polite">
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="status-text">Connecting to Nostr relays…</span>
+  </div>
+  <div id="content"></div>
+</main>
+
+<footer class="footer">
+  <p>Published on <strong>Nostr</strong>. This site reads posts live from public relays &mdash; nothing is stored here.</p>
+  <p class="relaystat" id="relaystat"></p>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

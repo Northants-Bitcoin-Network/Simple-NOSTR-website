@@ -1,0 +1,13 @@
+{
+  "names": {
+    "LFG": "6eb13d8905dd6c1498d313308fc91593acf2af8a36571cf944369ad40ec8defd",
+    "_": "6eb13d8905dd6c1498d313308fc91593acf2af8a36571cf944369ad40ec8defd"
+  },
+  "relays": {
+    "6eb13d8905dd6c1498d313308fc91593acf2af8a36571cf944369ad40ec8defd": [
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.primal.net"
+    ]
+  }
+}
