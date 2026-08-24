@@ -69,5 +69,4 @@ posts get permalinks too (`#/note/note1…`).
 | `assets/style.css` | Styling |
 | `manifest.webmanifest` | Makes the site installable on phones |
 | `.well-known/nostr.json` | NIP-05 verification (used if a custom domain is added) |
-| `404.html` | Redirects old `npub.pro` post links into the site |
 | `.nojekyll` | Stops GitHub hiding the `.well-known` folder |
