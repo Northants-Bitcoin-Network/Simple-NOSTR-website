@@ -32,6 +32,8 @@
   var KINDS = [0, 1];
   if (PAGES.calendar) KINDS = KINDS.concat([31922, 31923]);
   if (PAGES.articles) KINDS = KINDS.concat([30023]);
+  // Kind 3 is this account's contact list — the web of trust the Mentions page filters by.
+  if (PAGES.mentions) KINDS = KINDS.concat([3]);
   var CACHE_KEY = "nbn-events-v1";   // scoped per account below, so switching keys never shows stale posts
   var TIMEOUT_MS = 9000;
 
@@ -130,14 +132,14 @@
     return "";
   }
 
-  /* An nevent also carries relay hints (TLV type 1): the relays the author
-     saw the quoted event on. Without them a quote that lives nowhere in
+  /* An nevent or naddr also carries relay hints (TLV type 1): the relays the
+     author saw the quoted event on. Without them a quote that lives nowhere in
      config.js can never be found. */
   function quoteHints(id) {
     var out = [];
     try {
       var r = bech32Parse(id);
-      if (r.hrp !== "nevent") return out;
+      if (r.hrp !== "nevent" && r.hrp !== "naddr") return out;
       var b = r.bytes, i = 0;
       while (i + 2 <= b.length) {
         var type = b[i], len = b[i + 1];
@@ -150,6 +152,35 @@
       }
     } catch (err) { /* not a valid identifier — no hints to take */ }
     return out;
+  }
+
+  function utf8(bytes) {
+    var pct = "";
+    for (var i = 0; i < bytes.length; ++i) pct += "%" + ("0" + bytes[i].toString(16)).slice(-2);
+    try { return decodeURIComponent(pct); } catch (err) { return ""; }
+  }
+
+  /* naddr1 points at a replaceable event — a long-form article, a calendar
+     event — by author, kind and "d" tag rather than by id, because the author
+     can publish a newer version under the same address. TLV type 0 is the "d"
+     identifier, 2 the author, 3 the kind. The key is the "kind:pubkey:d" form
+     the rest of Nostr uses. */
+  function addrKey(id) {
+    try {
+      var r = bech32Parse(id);
+      if (r.hrp !== "naddr") return "";
+      var b = r.bytes, i = 0, d = "", haveD = false, pk = "", kind = -1;
+      while (i + 2 <= b.length) {
+        var type = b[i], len = b[i + 1], v = b.slice(i + 2, i + 2 + len);
+        if (type === 0) { d = utf8(v); haveD = true; }
+        else if (type === 2 && len === 32) pk = toHex(v);
+        else if (type === 3 && len === 4) kind = ((v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3]) >>> 0;
+        i += 2 + len;
+      }
+      if (!haveD || !pk || kind < 0) return "";
+      return kind + ":" + pk + ":" + d;
+    } catch (err) { /* not a valid identifier — leave the text alone */ }
+    return "";
   }
 
   /* npub is the bare key; nprofile wraps it in TLV records, type 0 being the key. */
@@ -221,7 +252,12 @@
 
   function saveCache() {
     try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify(Array.from(events.values()).slice(0, 400)));
+      // The contact list goes first: without it the Mentions filter has nothing to
+      // work from, and it must not be lost to the size trim.
+      var all = Array.from(events.values());
+      var keep = all.filter(function (e) { return e.kind === 3 && e.pubkey === PUBKEY; })
+        .concat(all.filter(function (e) { return !(e.kind === 3 && e.pubkey === PUBKEY); }));
+      localStorage.setItem(CACHE_KEY, JSON.stringify(keep.slice(0, 400)));
     } catch (e) { /* quota or blocked — the site works fine without the cache */ }
   }
 
@@ -344,6 +380,84 @@
     });
   }
 
+  /* ---- addressed events (naddr) ----
+     Same idea as the quotes above, but looked up by address instead of id, and
+     the newest version of an address wins. */
+  var addrs = {};
+  var addrWanted = {};
+  var addrTimer = null;
+
+  function addressOf(ev) {
+    return ev.kind + ":" + ev.pubkey + ":" + tagValue(ev, "d");
+  }
+
+  function addrOf(key) {
+    var hit = addrs[key] || null;
+    // This account's own articles and calendar events are already in the feed.
+    events.forEach(function (e) {
+      if (addressOf(e) !== key) return;
+      if (!hit || e.created_at > hit.created_at) hit = e;
+    });
+    return hit;
+  }
+
+  function needAddr(key, bech) {
+    if (!key || addrOf(key) || addrWanted[key]) return;
+    addrWanted[key] = true;
+    quoteHints(bech || "").forEach(function (url) {
+      if (RELAYS.indexOf(url) === -1 && quoteHosts.indexOf(url) === -1) quoteHosts.push(url);
+    });
+    clearTimeout(addrTimer);
+    addrTimer = setTimeout(fetchAddrs, 250);
+  }
+
+  function fetchAddrs() {
+    var want = Object.keys(addrWanted).filter(function (k) { return !addrOf(k); });
+    var where = RELAYS.concat(quoteHosts);
+    if (!want.length || !where.length) return;
+
+    // One filter per address: they differ in author, kind and "d" alike, so
+    // they cannot be merged into a single one without dragging in strangers.
+    var filters = want.map(function (k) {
+      var cut = k.indexOf(":"), rest = k.slice(cut + 1), cut2 = rest.indexOf(":");
+      return {
+        kinds: [parseInt(k.slice(0, cut), 10)],
+        authors: [rest.slice(0, cut2)],
+        "#d": [rest.slice(cut2 + 1)],
+        limit: 1
+      };
+    });
+
+    where.forEach(function (url) {
+      var ws;
+      try { ws = new WebSocket(url); } catch (e) { return; }
+      var timer = setTimeout(shut, TIMEOUT_MS);
+
+      function shut() {
+        clearTimeout(timer);
+        try { ws.close(); } catch (e) { /* already closed */ }
+      }
+
+      ws.onopen = function () {
+        ws.send(JSON.stringify(["REQ", "addrs"].concat(filters)));
+      };
+      ws.onerror = shut;
+      ws.onclose = function () { clearTimeout(timer); };
+      ws.onmessage = function (msg) {
+        var data;
+        try { data = JSON.parse(msg.data); } catch (e) { return; }
+        if (data[0] === "EOSE") return shut();
+        if (data[0] !== "EVENT" || !data[2] || !data[2].id) return;
+        var ev = data[2], key = addressOf(ev);
+        if (addrs[key] && addrs[key].created_at >= ev.created_at) return;
+        addrs[key] = ev;
+        needName(ev.pubkey);
+        queueRender();
+        refreshModal();
+      };
+    });
+  }
+
   function absorbProfile() {
     events.forEach(function (e) {
       if (e.kind === 0) {
@@ -361,19 +475,83 @@
     return out.sort(function (a, b) { return b.created_at - a.created_at; });
   }
 
-  /* Posts by other people that tag this account. */
+  /* Who this account follows, from its newest kind 3 contact list. Returns null
+     when no contact list has arrived yet — see mentions(). */
+  function follows() {
+    var newest = null;
+    events.forEach(function (e) {
+      if (e.kind !== 3 || e.pubkey !== PUBKEY) return;
+      if (!newest || e.created_at > newest.created_at) newest = e;
+    });
+    if (!newest) return null;
+    var set = Object.create(null);
+    (newest.tags || []).forEach(function (t) {
+      if (t[0] === "p" && /^[0-9a-f]{64}$/i.test(String(t[1] || ""))) set[String(t[1]).toLowerCase()] = true;
+    });
+    return set;
+  }
+
+  /* Posts by other people that tag this account, keeping only the ones from
+     accounts this account follows — a web of trust, which is what keeps the
+     page clear of spam. With no contact list to hand the filter is skipped
+     rather than applied to nothing, so a slow relay cannot empty the page. */
+  /* A reply carries a "p" tag for everyone in the thread whether or not it says
+     anything about them, so the tag alone means nothing. A real mention names
+     the account in the body — as a nostr: identifier, or through the old
+     positional "#[n]" form that points into the tag list. */
+  function namesDirect(ev) {
+    var body = String(ev.content || "");
+    var found = body.match(/(?:nostr:)?(?:npub|nprofile)1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,}/gi) || [];
+    if (found.some(function (tok) { return mentionKey(tok.replace(/^nostr:/i, "")) === PUBKEY; })) return true;
+    return (body.match(/#\[(\d+)\]/g) || []).some(function (ref) {
+      var t = (ev.tags || [])[parseInt(ref.slice(2), 10)];
+      return !!t && t[0] === "p" && t[1] === PUBKEY;
+    });
+  }
+
+  /* What a note carries counts as well, one level down: a reply whose own body
+     is nothing but a date, quoting an article that names the account, is still
+     somebody bringing the account up. The embedded event is fetched if it is
+     not already to hand, and the page redraws when it lands. */
+  function embedNamesAccount(ev) {
+    var found = String(ev.content || "")
+      .match(/(?:nostr:)?(?:note|nevent|naddr)1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,}/gi) || [];
+    return found.some(function (raw) {
+      var tok = raw.replace(/^nostr:/i, "");
+      var id = quoteKey(tok), key = id ? "" : addrKey(tok), inner = null;
+      if (id) { needQuote(id, tok); inner = quoteOf(id); }
+      else if (key) { needAddr(key, tok); inner = addrOf(key); }
+      if (!inner) return false;
+      if ((inner.tags || []).some(function (t) { return t[0] === "p" && t[1] === PUBKEY; })) return true;
+      return namesDirect(inner);
+    });
+  }
+
+  function namesAccount(ev) {
+    return namesDirect(ev) || embedNamesAccount(ev);
+  }
+
   function mentions() {
-    var out = [];
+    var out = [], trusted = follows();
     events.forEach(function (e) {
       if (e.kind !== 1 || e.pubkey === PUBKEY) return;
+      if (trusted && !trusted[String(e.pubkey).toLowerCase()]) return;
       var hit = (e.tags || []).some(function (t) { return t[0] === "p" && t[1] === PUBKEY; });
-      if (hit) out.push(e);
+      if (!hit) return;
+      if (isReply(e) && !namesAccount(e)) return;
+      out.push(e);
     });
     return out.sort(function (a, b) { return b.created_at - a.created_at; });
   }
 
+  /* NIP-10: a reply points at the note it answers with an "e" tag marked "root"
+     or "reply"; the older positional form carries no marker at all, so unmarked
+     tags count too. An "e" tag marked "mention" is a quote, and quoting someone
+     is not replying to them. */
   function isReply(ev) {
-    return (ev.tags || []).some(function (t) { return t[0] === "e"; });
+    return (ev.tags || []).some(function (t) {
+      return t[0] === "e" && t[3] !== "mention";
+    });
   }
 
   function hashtagsOf(ev) {
@@ -484,11 +662,15 @@
         var id = m[2];
         var pk = mentionKey(id);
         var qid = pk ? "" : quoteKey(id);
+        var akey = (pk || qid) ? "" : addrKey(id);
         if (pk) needName(pk);
         // Only one level deep: a quote inside a quote stays a plain link.
         if (qid && depth < 1) {
           needQuote(qid, id);
           out += quoteCard(qid, id);
+        } else if (akey && depth < 1) {
+          needAddr(akey, id);
+          out += addrCard(akey, id);
         } else {
           var label = pk && names[pk] ? "@" + esc(names[pk]) : esc(id.slice(0, 12)) + "…";
           out += '<a class="mention" href="https://njump.me/' + esc(id) +
@@ -523,6 +705,28 @@
            '" target="_blank" rel="noopener noreferrer">' + esc(personName(ev.pubkey)) + '</a>' +
            '<span class="quote-date">' + esc(fmtDate(ev.created_at)) + '</span></span>' +
            '<span class="quote-body">' + renderContent(ev.content, 1) + '</span></span>';
+  }
+
+  /* An addressed event is usually long-form, so the card shows its title and a
+     trimmed summary rather than the whole body. */
+  function addrCard(key, bech) {
+    var ev = addrOf(key);
+    if (!ev) {
+      return '<a class="mention" href="https://njump.me/' + esc(bech) +
+             '" target="_blank" rel="noopener noreferrer">' + esc(bech.slice(0, 12)) + '\u2026</a>';
+    }
+    var npub = bech32Encode("npub", ev.pubkey);
+    var title = tagValue(ev, "title") || tagValue(ev, "name");
+    var body = (tagValue(ev, "summary") || String(ev.content || "")).replace(/\s+/g, " ").trim();
+    if (body.length > 300) body = body.slice(0, 300).replace(/\s\S*$/, "") + "\u2026";
+    return '<span class="quote">' +
+           '<span class="quote-head">' +
+           '<a class="note-author" href="https://njump.me/' + esc(npub) +
+           '" target="_blank" rel="noopener noreferrer">' + esc(personName(ev.pubkey)) + '</a>' +
+           '<span class="quote-date">' + esc(fmtDate(ev.created_at)) + '</span></span>' +
+           (title ? '<a class="quote-title" href="https://njump.me/' + esc(bech) +
+                    '" target="_blank" rel="noopener noreferrer">' + esc(title) + '</a>' : '') +
+           '<span class="quote-body">' + esc(body) + '</span></span>';
   }
 
   function noteCard(ev, opts) {
@@ -1320,17 +1524,75 @@
 
   }
 
-  /* Cards are a fixed height, so a body that overflows is cut back to a whole
-     number of lines — never through the middle of one. */
+  /* Cards are a fixed height, so a body that overflows is cut back — but never
+     through the middle of a line. Line height is no guide here: a quoted note
+     inside the body sets its own font size, padding and leading, so arithmetic
+     over the outer element's line height slices whatever the inner one is
+     drawing. The real line boxes are measured instead, and the cut is placed at
+     the bottom of the lowest one that fits whole. */
+  function lastWholeLine(el, room) {
+    var top = el.getBoundingClientRect().top, low = 0;
+    var range = document.createRange();
+    var walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, null);
+    var node;
+
+    function consider(rects) {
+      for (var i = 0; i < rects.length; ++i) {
+        var bottom = rects[i].bottom - top;
+        // Half a pixel of slack: sub-pixel layout must not lose a whole line.
+        if (bottom <= room + 0.5 && bottom > low) low = bottom;
+      }
+    }
+
+    while ((node = walk.nextNode())) {
+      if (node.nodeType === 1) {
+        // Media is all-or-nothing; a part-drawn image is as bad as half a letter.
+        // A quote's shaded box counts whole too, so its padding and its rounded
+        // bottom corners stay inside the cut instead of ending on a flat edge.
+        if (!/^(IMG|VIDEO)$/.test(node.tagName) && !node.classList.contains("quote")) continue;
+        consider([node.getBoundingClientRect()]);
+      } else if (node.nodeValue && node.nodeValue.trim()) {
+        range.selectNodeContents(node);
+        consider(range.getClientRects());
+      }
+    }
+    return low;
+  }
+
   function trimCards() {
     var bodies = document.querySelectorAll(".feed-grid .note-body");
     Array.prototype.forEach.call(bodies, function (el) {
       el.style.maxHeight = "";
-      var lh = parseFloat(window.getComputedStyle(el).lineHeight);
-      if (!lh || !el.clientHeight) return;
-      if (el.scrollHeight <= el.clientHeight + 1) return;
-      var lines = Math.max(1, Math.floor(el.clientHeight / lh));
-      el.style.maxHeight = (lines * lh) + "px";
+      var inner = el.querySelectorAll(".quote-body");
+      Array.prototype.forEach.call(inner, function (q) {
+        q.style.maxHeight = "";
+        q.style.overflow = "";
+      });
+
+      var room = el.clientHeight;
+      if (!room) return;
+      if (el.scrollHeight <= room + 1) return;
+
+      /* A quote that runs past the bottom is trimmed from the inside first, so
+         the box closes properly on a line of its own text with its padding and
+         rounded corners intact. Only then is the body itself cut. */
+      var top = el.getBoundingClientRect().top;
+      Array.prototype.forEach.call(inner, function (q) {
+        var box = q.parentNode;
+        if (box.getBoundingClientRect().bottom - top <= room + 0.5) return;
+        var style = window.getComputedStyle(box);
+        var skirt = parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
+        var space = room - (q.getBoundingClientRect().top - top) - skirt;
+        if (space <= 0) return;
+        var line = lastWholeLine(q, space);
+        if (line <= 0) return;
+        q.style.maxHeight = line + "px";
+        q.style.overflow = "hidden";
+      });
+
+      var cut = lastWholeLine(el, room);
+      // Nothing fits whole — leave the body alone rather than blank the card.
+      if (cut > 0) el.style.maxHeight = cut + "px";
     });
   }
 
