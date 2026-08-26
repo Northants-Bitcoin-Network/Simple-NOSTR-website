@@ -401,6 +401,7 @@ body.is-locked { overflow: hidden; }
 }
 .quote-head { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .35rem; flex-wrap: wrap; }
 .quote-date { color: var(--muted); font-size: .78rem; }
+.quote-title { display: block; font-weight: 600; margin-bottom: .25rem; }
 .quote-body { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
 .quote-body img, .quote-body video { display: block; max-width: 100%; border-radius: 8px; margin: .5rem 0; }
 /* A quote fills whatever room the card has; the card does the trimming. */
